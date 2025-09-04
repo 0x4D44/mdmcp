@@ -209,13 +209,13 @@ pub struct InitializeResult {
 /// Server capabilities in initialize response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerCapabilities {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub logging: Option<HashMap<String, serde_json::Value>>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompts: Option<HashMap<String, serde_json::Value>>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resources: Option<HashMap<String, serde_json::Value>>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<HashMap<String, serde_json::Value>>,
 }
 

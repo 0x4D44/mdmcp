@@ -5,20 +5,27 @@
 //! newline-delimited JSON messages and ensuring proper RPC format compliance.
 
 use anyhow::{Context, Result};
-use mdmcp_common::{McpErrorCode, RpcError, RpcId, RpcNotification, RpcRequest, RpcResponse};
+use mdmcp_common::{McpErrorCode, RpcError, RpcId, RpcRequest, RpcResponse};
 use serde_json::Value;
 use tokio::io::{self, AsyncWriteExt};
 use tracing::{debug, warn};
 
-/// Parse a JSON-RPC request from a line of input
-pub fn parse_request(line: &str) -> Result<RpcRequest> {
+/// Represents either a request or notification
+#[derive(Debug)]
+pub enum RpcMessage {
+    Request(RpcRequest),
+    Notification { method: String, params: Value },
+}
+
+/// Parse a JSON-RPC message (request or notification) from a line of input
+pub fn parse_message(line: &str) -> Result<RpcMessage> {
     let value: Value = serde_json::from_str(line).context("Invalid JSON")?;
 
     // Validate required fields
     let value_clone = value.clone();
     let obj = value_clone
         .as_object()
-        .ok_or_else(|| anyhow::anyhow!("Request must be a JSON object"))?;
+        .ok_or_else(|| anyhow::anyhow!("Message must be a JSON object"))?;
 
     let jsonrpc = obj
         .get("jsonrpc")
@@ -29,22 +36,36 @@ pub fn parse_request(line: &str) -> Result<RpcRequest> {
         return Err(anyhow::anyhow!("Invalid jsonrpc version: {}", jsonrpc));
     }
 
-    let id = obj
-        .get("id")
-        .ok_or_else(|| anyhow::anyhow!("Missing 'id' field"))?;
-
     let method = obj
         .get("method")
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("Missing or invalid 'method' field"))?;
 
-    let _params = obj.get("params").cloned().unwrap_or(Value::Null);
+    let params = obj.get("params").cloned().unwrap_or(Value::Null);
 
-    let request: RpcRequest =
-        serde_json::from_value(value).context("Failed to deserialize RPC request")?;
+    // Check if this is a request (has id) or notification (no id)
+    if obj.contains_key("id") {
+        let request: RpcRequest =
+            serde_json::from_value(value).context("Failed to deserialize RPC request")?;
+        debug!("Parsed RPC request: method={}, id={:?}", method, request.id);
+        Ok(RpcMessage::Request(request))
+    } else {
+        debug!("Parsed RPC notification: method={}", method);
+        Ok(RpcMessage::Notification {
+            method: method.to_string(),
+            params,
+        })
+    }
+}
 
-    debug!("Parsed RPC request: method={}, id={:?}", method, id);
-    Ok(request)
+/// Parse a JSON-RPC request from a line of input (legacy function for compatibility)
+pub fn parse_request(line: &str) -> Result<RpcRequest> {
+    match parse_message(line)? {
+        RpcMessage::Request(req) => Ok(req),
+        RpcMessage::Notification { method, .. } => {
+            Err(anyhow::anyhow!("Expected request but got notification: {}", method))
+        }
+    }
 }
 
 /// Send a JSON-RPC response to stdout
@@ -54,27 +75,27 @@ pub async fn send_response(response: &RpcResponse) -> Result<()> {
     send_json_line(&json).await
 }
 
-/// Send a JSON-RPC notification to stdout
-pub async fn send_notification(notification: &RpcNotification) -> Result<()> {
-    let json = serde_json::to_string(notification).context("Failed to serialize notification")?;
-
-    send_json_line(&json).await
-}
-
 /// Send a line of JSON to stdout with newline
 async fn send_json_line(json: &str) -> Result<()> {
+    debug!("Preparing to send JSON: {}", json);
     let mut stdout = io::stdout();
+    
+    debug!("Writing JSON to stdout...");
     stdout
         .write_all(json.as_bytes())
         .await
         .context("Failed to write to stdout")?;
+    
+    debug!("Writing newline to stdout...");
     stdout
         .write_all(b"\n")
         .await
         .context("Failed to write newline to stdout")?;
+    
+    debug!("Flushing stdout...");
     stdout.flush().await.context("Failed to flush stdout")?;
 
-    debug!("Sent JSON: {}", json);
+    debug!("Successfully sent JSON: {}", json);
     Ok(())
 }
 
@@ -109,19 +130,10 @@ pub fn create_error_response(
     }
 }
 
-/// Create a notification message
-pub fn create_notification(method: String, params: Value) -> RpcNotification {
-    RpcNotification {
-        jsonrpc: "2.0".to_string(),
-        method,
-        params,
-    }
-}
-
 /// Validate method name against MCP specification
 pub fn validate_method(method: &str) -> Result<(), McpErrorCode> {
     match method {
-        "initialize" | "fs.read" | "fs.write" | "cmd.run" => Ok(()),
+        "initialize" | "tools/list" | "tools/call" => Ok(()),
         _ => {
             warn!("Unsupported method: {}", method);
             Err(McpErrorCode::InvalidArgs)
@@ -168,9 +180,8 @@ mod tests {
     #[test]
     fn test_validate_method() {
         assert!(validate_method("initialize").is_ok());
-        assert!(validate_method("fs.read").is_ok());
-        assert!(validate_method("fs.write").is_ok());
-        assert!(validate_method("cmd.run").is_ok());
+        assert!(validate_method("tools/list").is_ok());
+        assert!(validate_method("tools/call").is_ok());
         assert!(validate_method("invalid.method").is_err());
     }
 
@@ -201,16 +212,5 @@ mod tests {
         let error = response.error.unwrap();
         assert_eq!(error.code, McpErrorCode::PolicyDeny as i32);
         assert_eq!(error.message, "Policy denied the operation");
-    }
-
-    #[test]
-    fn test_create_notification() {
-        let notification = create_notification(
-            "mcp.handshake".to_string(),
-            serde_json::json!({"name": "test"}),
-        );
-
-        assert_eq!(notification.jsonrpc, "2.0");
-        assert_eq!(notification.method, "mcp.handshake");
     }
 }

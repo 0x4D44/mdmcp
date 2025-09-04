@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use mdmcp_common::{
     CmdRunParams, CmdRunResult, FsReadParams, FsReadResult, FsWriteParams, FsWriteResult,
-    HandshakeParams, InitializeParams, InitializeResult, McpErrorCode, RpcId, RpcRequest, RpcResponse,
+    InitializeParams, InitializeResult, McpErrorCode, RpcId, RpcRequest, RpcResponse,
     ServerCapabilities, ServerInfo,
 };
 use mdmcp_policy::CompiledPolicy;
@@ -24,8 +24,7 @@ use crate::audit::{
 use crate::cmd_catalog::{CatalogError, CommandCatalog};
 use crate::fs_safety::{FsError, GuardedFileReader, GuardedFileWriter};
 use crate::rpc::{
-    self, create_error_response, create_notification, create_success_response, send_notification,
-    send_response, validate_method,
+    self, create_error_response, create_success_response, send_response, validate_method, RpcMessage,
 };
 
 /// Main MCP server instance
@@ -69,52 +68,54 @@ impl Server {
         })
     }
 
-    /// Send MCP handshake notification
-    pub async fn send_handshake(&self) -> Result<()> {
-        let mut capabilities = HashMap::new();
-        capabilities.insert("fs.read".to_string(), serde_json::json!(true));
-        capabilities.insert("fs.write".to_string(), serde_json::json!(true));
-        capabilities.insert(
-            "cmd.run".to_string(),
-            serde_json::json!({"streaming": false}),
-        );
-
-        let params = HandshakeParams {
-            name: "mdmcpsrvr".to_string(),
-            version: env!("CARGO_PKG_VERSION").to_string(),
-            capabilities,
-            policy_hash: self.policy.policy_hash.clone(),
-        };
-
-        let notification =
-            create_notification("mcp.handshake".to_string(), serde_json::to_value(params)?);
-
-        send_notification(&notification)
-            .await
-            .context("Failed to send handshake notification")
-    }
-
-    /// Handle a JSON-RPC request line
+    /// Handle a JSON-RPC message line (request or notification)
     pub async fn handle_request_line(&self, line: &str) -> Result<()> {
-        match rpc::parse_request(line) {
-            Ok(request) => {
+        debug!("Parsing JSON-RPC message: {}", line);
+        match rpc::parse_message(line) {
+            Ok(RpcMessage::Request(request)) => {
+                debug!("Successfully parsed request: method={}, id={:?}", request.method, request.id);
                 self.handle_request(request).await;
+                debug!("Request handling completed");
+            }
+            Ok(RpcMessage::Notification { method, params }) => {
+                debug!("Successfully parsed notification: method={}", method);
+                self.handle_notification(method, params).await;
+                debug!("Notification handling completed");
             }
             Err(e) => {
-                error!("Failed to parse request: {}", e);
-                // Send error response with null ID since we couldn't parse the request
+                error!("Failed to parse message: {}", e);
+                eprintln!("Server error: Failed to parse message: {}", e);
+                // Send error response with null ID since we couldn't parse the message
                 let response = create_error_response(
                     RpcId::Null,
                     McpErrorCode::InvalidArgs,
-                    Some(format!("Invalid JSON-RPC request: {}", e)),
+                    Some(format!("Invalid JSON-RPC message: {}", e)),
                     None,
                 );
                 if let Err(send_err) = send_response(&response).await {
                     error!("Failed to send error response: {}", send_err);
+                    eprintln!("Server error: Failed to send error response: {}", send_err);
                 }
             }
         }
         Ok(())
+    }
+
+    /// Handle a notification (no response needed)
+    async fn handle_notification(&self, method: String, _params: Value) {
+        debug!("Handling notification: method={}", method);
+        match method.as_str() {
+            "initialized" => {
+                info!("Received initialized notification - handshake complete");
+                eprintln!("DEBUG: Received initialized notification");
+                // The client has confirmed initialization is complete
+                // Server is now ready for normal operation
+            }
+            _ => {
+                debug!("Unknown notification method: {}", method);
+                eprintln!("DEBUG: Unknown notification: {}", method);
+            }
+        }
     }
 
     /// Handle initialize request
@@ -140,29 +141,39 @@ impl Server {
             init_params.protocol_version
         );
 
-        // Validate protocol version
-        if init_params.protocol_version != "2024-11-05" {
-            let error_msg = format!("Unsupported protocol version: {}", init_params.protocol_version);
-            self.auditor.log_error(ctx, &error_msg, None);
-            return create_error_response(
-                id,
-                McpErrorCode::InvalidArgs,
-                Some(error_msg),
-                None,
+        // Validate protocol version - accept both current and newer versions
+        if init_params.protocol_version != "2024-11-05"
+            && init_params.protocol_version != "2025-06-18"
+        {
+            let error_msg = format!(
+                "Unsupported protocol version: {}",
+                init_params.protocol_version
             );
+            self.auditor.log_error(ctx, &error_msg, None);
+            return create_error_response(id, McpErrorCode::InvalidArgs, Some(error_msg), None);
         }
 
-        // Create server capabilities - this server doesn't support resources, tools, or prompts
-        // It only supports file system and command execution via the custom protocol
+        // Create server capabilities - declare tools for fs.read, fs.write, cmd.run
+        let mut tools_caps = HashMap::new();
+        tools_caps.insert("listChanged".to_string(), serde_json::Value::Bool(true));
+
+        // Create minimal capabilities object with only supported features
         let capabilities = ServerCapabilities {
             logging: None,
             prompts: None,
             resources: None,
-            tools: None,
+            tools: Some(tools_caps),
+        };
+
+        // Use the client's protocol version in the response
+        let response_protocol_version = if init_params.protocol_version == "2025-06-18" {
+            "2025-06-18"
+        } else {
+            "2024-11-05"
         };
 
         let result = InitializeResult {
-            protocol_version: "2024-11-05".to_string(),
+            protocol_version: response_protocol_version.to_string(),
             capabilities,
             server_info: ServerInfo {
                 name: "mdmcpsrvr".to_string(),
@@ -173,6 +184,175 @@ impl Server {
         self.auditor.log_success(ctx, SuccessDetails::default());
 
         create_success_response(id, serde_json::to_value(result).unwrap())
+    }
+
+    /// Handle tools/list request
+    async fn handle_tools_list(
+        &self,
+        ctx: &AuditContext,
+        id: RpcId,
+        _params: Value,
+    ) -> RpcResponse {
+        debug!("tools/list request");
+
+        let tools = serde_json::json!({
+            "tools": [
+                {
+                    "name": "read_file",
+                    "description": "Read file contents from the filesystem",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "description": "Path to the file to read"
+                            },
+                            "encoding": {
+                                "type": "string",
+                                "enum": ["utf8", "base64"],
+                                "default": "utf8",
+                                "description": "File encoding"
+                            }
+                        },
+                        "required": ["path"]
+                    }
+                },
+                {
+                    "name": "write_file",
+                    "description": "Write data to a file",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "description": "Path to the file to write"
+                            },
+                            "data": {
+                                "type": "string",
+                                "description": "Data to write to the file"
+                            },
+                            "encoding": {
+                                "type": "string",
+                                "enum": ["utf8", "base64"],
+                                "default": "utf8",
+                                "description": "Data encoding"
+                            },
+                            "create": {
+                                "type": "boolean",
+                                "default": true,
+                                "description": "Create file if it doesn't exist"
+                            },
+                            "overwrite": {
+                                "type": "boolean",
+                                "default": true,
+                                "description": "Overwrite file if it exists"
+                            }
+                        },
+                        "required": ["path", "data"]
+                    }
+                },
+                {
+                    "name": "run_command",
+                    "description": "Execute a command from the policy-defined catalog",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "command_id": {
+                                "type": "string",
+                                "description": "ID of the command to run from the catalog"
+                            },
+                            "args": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Command arguments"
+                            },
+                            "stdin": {
+                                "type": "string",
+                                "default": "",
+                                "description": "Data to send to command stdin"
+                            }
+                        },
+                        "required": ["command_id"]
+                    }
+                }
+            ]
+        });
+
+        self.auditor.log_success(ctx, SuccessDetails::default());
+        create_success_response(id, tools)
+    }
+
+    /// Handle tools/call request
+    async fn handle_tools_call(&self, ctx: &AuditContext, id: RpcId, params: Value) -> RpcResponse {
+        let call_params: serde_json::Value = params;
+
+        let tool_name = match call_params.get("name").and_then(|n| n.as_str()) {
+            Some(name) => name,
+            None => {
+                self.auditor
+                    .log_error(ctx, "Missing tool name in tools/call", None);
+                return create_error_response(
+                    id,
+                    McpErrorCode::InvalidArgs,
+                    Some("Missing tool name".to_string()),
+                    None,
+                );
+            }
+        };
+
+        let tool_args = call_params
+            .get("arguments")
+            .cloned()
+            .unwrap_or(serde_json::json!({}));
+
+        debug!("tools/call: tool={}, args={:?}", tool_name, tool_args);
+
+        // Dispatch to the appropriate tool implementation
+        match tool_name {
+            "read_file" => {
+                // Convert tool args to fs.read format
+                let fs_params = serde_json::json!({
+                    "path": tool_args.get("path"),
+                    "encoding": tool_args.get("encoding").unwrap_or(&serde_json::json!("utf8")),
+                    "offset": 0,
+                    "length": 1_000_000 // Max length
+                });
+                self.handle_fs_read(ctx, id, fs_params).await
+            }
+            "write_file" => {
+                // Convert tool args to fs.write format
+                let fs_params = serde_json::json!({
+                    "path": tool_args.get("path"),
+                    "data": tool_args.get("data"),
+                    "encoding": tool_args.get("encoding").unwrap_or(&serde_json::json!("utf8")),
+                    "create": tool_args.get("create").unwrap_or(&serde_json::json!(true)),
+                    "overwrite": tool_args.get("overwrite").unwrap_or(&serde_json::json!(true))
+                });
+                self.handle_fs_write(ctx, id, fs_params).await
+            }
+            "run_command" => {
+                // Convert tool args to cmd.run format
+                let cmd_params = serde_json::json!({
+                    "command_id": tool_args.get("command_id"),
+                    "args": tool_args.get("args").unwrap_or(&serde_json::json!([])),
+                    "stdin": tool_args.get("stdin").unwrap_or(&serde_json::json!("")),
+                    "cwd": null,
+                    "env": {},
+                    "timeout_ms": null
+                });
+                self.handle_cmd_run(ctx, id, cmd_params).await
+            }
+            _ => {
+                self.auditor
+                    .log_error(ctx, &format!("Unknown tool: {}", tool_name), None);
+                create_error_response(
+                    id,
+                    McpErrorCode::InvalidArgs,
+                    Some(format!("Unknown tool: {}", tool_name)),
+                    None,
+                )
+            }
+        }
     }
 
     /// Handle a parsed JSON-RPC request
@@ -207,6 +387,14 @@ impl Server {
                 self.handle_initialize(&audit_ctx, request.id, request.params)
                     .await
             }
+            "tools/list" => {
+                self.handle_tools_list(&audit_ctx, request.id, request.params)
+                    .await
+            }
+            "tools/call" => {
+                self.handle_tools_call(&audit_ctx, request.id, request.params)
+                    .await
+            }
             "fs.read" => {
                 self.handle_fs_read(&audit_ctx, request.id, request.params)
                     .await
@@ -231,8 +419,12 @@ impl Server {
         };
 
         // Send response
+        debug!("Sending response for method: {}", request.method);
         if let Err(e) = send_response(&response).await {
             error!("Failed to send response: {}", e);
+            eprintln!("Server error: Failed to send response: {}", e);
+        } else {
+            debug!("Response sent successfully for method: {}", request.method);
         }
     }
 

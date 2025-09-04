@@ -63,10 +63,10 @@ mdmcp/
 ## 2) Minimal Protocol Surface (MCP over JSON‑RPC 2.0 / stdio)
 
 **Methods**
+- `initialize(params) -> result` (standard MCP initialization)
 - `fs.read(params) -> result`
 - `fs.write(params) -> result`
 - `cmd.run(params) -> result`
-- `mcp.handshake()` (server-initiated capability advertisement and version)
 
 **Transport**: stdio (default). The server reads newline-delimited JSON-RPC messages from stdin and writes responses to stdout.
 
@@ -76,15 +76,7 @@ mdmcp/
 - `code`: `POLICY_DENY`, `INVALID_ARGS`, `TIMEOUT`, `OUTPUT_TRUNCATED`, `IO_ERROR`, `INTERNAL`.
 - `data`: `{ "rule": "denyNetworkFS" | "outsideAllowedRoots" | ... }` where useful.
 
-**Handshake**: on startup server sends an unsolicited `"mcp.handshake"` **notification** (no id) with capabilities.
-
-```json
-{"jsonrpc":"2.0","method":"mcp.handshake","params":{
-  "name":"mdmcpsrvr","version":"0.1.0",
-  "capabilities":{"fs.read":true,"fs.write":true,"cmd.run":{"streaming":true}},
-  "policyHash":"<sha256(policy.yaml)>"
-}}
-```
+**Initialization**: follows standard MCP protocol - client sends `initialize` request, server responds with capabilities.
 
 ---
 
@@ -304,7 +296,7 @@ Redact env; hash content (sha256) instead of logging bodies.
 mdmcpsrvr --config /path/policy.yaml [--log-level info] [--stdio]
 ```
 - Default transport: stdio. (No websocket in v1.)
-- On start: load policy, emit `mcp.handshake` notification, then service requests.
+- On start: load policy, then service requests (starting with initialize).
 - SIGHUP: optional policy reload (v1: disabled; provide `--reload` flag to opt-in).
 
 **Crates**
@@ -323,7 +315,7 @@ mdmcpsrvr --config /path/policy.yaml [--log-level info] [--stdio]
 - `mdmcpcfg policy show|edit|validate` — print, open in `$EDITOR`, validate against schema.
 - `mdmcpcfg policy add-root <path> [--write]` — add allowed root / write rule.
 - `mdmcpcfg cmd add <id> --exec <path> [--allow <arg>...] [--pattern <regex>...]` — manage catalog entries.
-- `mdmcpcfg doctor` — check PATH, mounts, permissions, confirm server spawns and handshake works.
+- `mdmcpcfg doctor` — check PATH, mounts, permissions, confirm server spawns and initialize works.
 - `mdmcpcfg run -- <jsonrpc-file>` — optional helper to send a raw RPC for smoke tests.
 
 **Crates**: `clap`, `serde_yaml`, `serde_json`, `schemars`, `reqwest` (TLS updates), `sha2`, `minisign`, `tempfile`, `dirs`, `edit`, `anyhow`.
@@ -445,13 +437,12 @@ mdmcp_common = { path = "../crates/mdmcp_common" }
 - Read NDJSON lines from stdin via `tokio::io::BufReader`.
 - Parse to `RpcRequest { id, method, params }` using `serde_json::Value`.
 - Dispatch to `server::handle_request`.
-- Write `RpcResponse` to stdout; for notifications (like handshake), write without `id`.
+- Write `RpcResponse` to stdout.
 - Generate request ids for internal progress notifications if needed (not required in v1).
 
 ### 11.2 `mdmcpsrvr/src/server.rs`
 - Struct `Server { policy: Arc<Policy>, auditor: Auditor, cmd_exec: CmdExec }`.
-- Methods `handle_fs_read`, `handle_fs_write`, `handle_cmd_run`.
-- Emit `mcp.handshake` notification once after policy load.
+- Methods `handle_initialize`, `handle_fs_read`, `handle_fs_write`, `handle_cmd_run`.
 
 ### 11.3 `mdmcpsrvr/src/policy.rs` (in tandem with `mdmcp_policy` crate)
 - Load YAML, expand `~`, canonicalize paths in `allowedRoots` and `writeRules`.
@@ -513,7 +504,7 @@ mdmcp_common = { path = "../crates/mdmcp_common" }
    - `policy.rs` loader & `policyHash`.
    - `fs_safety.rs` guards + network-FS checks per OS.
    - `cmd_catalog.rs` + `sandbox.rs` to execute curated commands.
-   - `server.rs` dispatch; emit handshake on start.
+   - `server.rs` dispatch; handle standard MCP initialize.
 5. **Implement `mdmcpcfg`** with `clap` subcommands: `install`, `update`, `policy`, `doctor`.
 6. **Write `tests/e2e_basic.rs`**: start server as a child process, send a few RPCs, assert outputs.
 7. **Add CI**: Rust stable, run `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test`.
@@ -525,7 +516,7 @@ mdmcp_common = { path = "../crates/mdmcp_common" }
 - MCP server compiles on Windows/macOS/Linux and passes unit + e2e tests.
 - Exposes **only** `fs.read`, `fs.write`, `cmd.run`.
 - Enforces allowed roots, network-FS block, write zones, command catalog constraints, time/output caps.
-- Emits `mcp.handshake` notification on start.
+- Handles standard MCP initialize request/response.
 - JSONL audit log with redact + sha256 content hashing.
 - CLI can create a default policy, validate it, add a root, add a command, and run `doctor` successfully.
 
@@ -578,7 +569,7 @@ printf '{"jsonrpc":"2.0","id":1,"method":"fs.read","params":{"path":"examples/po
 
 ## 18) Nice-to-Haves (Post‑v1)
 
-- Hot-reload policy on SIGHUP with safe swap & hash update in handshake broadcasts.
+- Hot-reload policy on SIGHUP with safe swap.
 - Per-client policy profiles (tighten for weaker clients).
 - Metrics via OpenTelemetry, `/metrics` text endpoint (when WS/http transport is added).
 - Policy dry-run tool in CLI to explain allow/deny decisions.

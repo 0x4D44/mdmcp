@@ -157,7 +157,7 @@ impl CommandCatalog {
         cmd: &CompiledCommand,
         requested_cwd: Option<&str>,
     ) -> Result<Option<PathBuf>, CatalogError> {
-        let requested_path = requested_cwd.map(|s| Path::new(s));
+        let requested_path = requested_cwd.map(Path::new);
 
         let validated = sandbox::validate_cwd(
             requested_path,

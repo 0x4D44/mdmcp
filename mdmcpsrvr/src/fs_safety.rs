@@ -282,7 +282,7 @@ fn canonicalize_path(path: &Path) -> Result<PathBuf> {
 /// Canonicalize path for write operations, handling non-existent files
 fn canonicalize_path_for_write(path: &Path, create: bool) -> Result<PathBuf, FsError> {
     if path.exists() {
-        path.canonicalize().map_err(|e| FsError::Io(e))
+        path.canonicalize().map_err(FsError::Io)
     } else if create {
         // For non-existent files that we're allowed to create,
         // canonicalize the parent directory
