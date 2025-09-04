@@ -1,0 +1,14 @@
+[workspace]
+members = [
+  "mdmcpsrvr",
+  "mdmcpcfg",
+  "crates/mdmcp_policy",
+  "crates/mdmcp_common",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+authors = ["mdmcp developers"]
+license = "Apache-2.0"
+version = "0.1.1"

@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(/C:\\language\\mdmcp/**)",
+      "Read(/C:\\language\\mdmcp\\mdmcpcfg/**)",
+      "Read(/C:\\language\\mdmcp\\mdmcpsrvr/**)",
+      "Read(/C:\\language\\mdmcp\\mdmcpcfg\\src/**)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

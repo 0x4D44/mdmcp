@@ -1,0 +1,216 @@
+//! # JSON-RPC 2.0 Transport Layer
+//!
+//! Handles JSON-RPC 2.0 message parsing, validation, and serialization over stdio.
+//! This module implements the transport layer for the MCP protocol, processing
+//! newline-delimited JSON messages and ensuring proper RPC format compliance.
+
+use anyhow::{Context, Result};
+use mdmcp_common::{McpErrorCode, RpcError, RpcId, RpcNotification, RpcRequest, RpcResponse};
+use serde_json::Value;
+use tokio::io::{self, AsyncWriteExt};
+use tracing::{debug, warn};
+
+/// Parse a JSON-RPC request from a line of input
+pub fn parse_request(line: &str) -> Result<RpcRequest> {
+    let value: Value = serde_json::from_str(line).context("Invalid JSON")?;
+
+    // Validate required fields
+    let value_clone = value.clone();
+    let obj = value_clone
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("Request must be a JSON object"))?;
+
+    let jsonrpc = obj
+        .get("jsonrpc")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("Missing or invalid 'jsonrpc' field"))?;
+
+    if jsonrpc != "2.0" {
+        return Err(anyhow::anyhow!("Invalid jsonrpc version: {}", jsonrpc));
+    }
+
+    let id = obj
+        .get("id")
+        .ok_or_else(|| anyhow::anyhow!("Missing 'id' field"))?;
+
+    let method = obj
+        .get("method")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("Missing or invalid 'method' field"))?;
+
+    let _params = obj.get("params").cloned().unwrap_or(Value::Null);
+
+    let request: RpcRequest =
+        serde_json::from_value(value).context("Failed to deserialize RPC request")?;
+
+    debug!("Parsed RPC request: method={}, id={:?}", method, id);
+    Ok(request)
+}
+
+/// Send a JSON-RPC response to stdout
+pub async fn send_response(response: &RpcResponse) -> Result<()> {
+    let json = serde_json::to_string(response).context("Failed to serialize response")?;
+
+    send_json_line(&json).await
+}
+
+/// Send a JSON-RPC notification to stdout
+pub async fn send_notification(notification: &RpcNotification) -> Result<()> {
+    let json = serde_json::to_string(notification).context("Failed to serialize notification")?;
+
+    send_json_line(&json).await
+}
+
+/// Send a line of JSON to stdout with newline
+async fn send_json_line(json: &str) -> Result<()> {
+    let mut stdout = io::stdout();
+    stdout
+        .write_all(json.as_bytes())
+        .await
+        .context("Failed to write to stdout")?;
+    stdout
+        .write_all(b"\n")
+        .await
+        .context("Failed to write newline to stdout")?;
+    stdout.flush().await.context("Failed to flush stdout")?;
+
+    debug!("Sent JSON: {}", json);
+    Ok(())
+}
+
+/// Create a success response
+pub fn create_success_response(id: RpcId, result: Value) -> RpcResponse {
+    RpcResponse {
+        jsonrpc: "2.0".to_string(),
+        id,
+        result: Some(result),
+        error: None,
+    }
+}
+
+/// Create an error response
+pub fn create_error_response(
+    id: RpcId,
+    code: McpErrorCode,
+    message: Option<String>,
+    data: Option<Value>,
+) -> RpcResponse {
+    let error_message = message.unwrap_or_else(|| code.message().to_string());
+
+    RpcResponse {
+        jsonrpc: "2.0".to_string(),
+        id,
+        result: None,
+        error: Some(RpcError {
+            code: code.into(),
+            message: error_message,
+            data,
+        }),
+    }
+}
+
+/// Create a notification message
+pub fn create_notification(method: String, params: Value) -> RpcNotification {
+    RpcNotification {
+        jsonrpc: "2.0".to_string(),
+        method,
+        params,
+    }
+}
+
+/// Validate method name against MCP specification
+pub fn validate_method(method: &str) -> Result<(), McpErrorCode> {
+    match method {
+        "initialize" | "fs.read" | "fs.write" | "cmd.run" => Ok(()),
+        _ => {
+            warn!("Unsupported method: {}", method);
+            Err(McpErrorCode::InvalidArgs)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mdmcp_common::RpcId;
+
+    #[test]
+    fn test_parse_valid_request() {
+        let json = r#"{"jsonrpc":"2.0","id":1,"method":"fs.read","params":{"path":"/test"}}"#;
+        let request = parse_request(json).unwrap();
+
+        assert_eq!(request.jsonrpc, "2.0");
+        assert_eq!(request.method, "fs.read");
+        match request.id {
+            RpcId::Number(n) => assert_eq!(n, 1),
+            _ => panic!("Expected number ID"),
+        }
+    }
+
+    #[test]
+    fn test_parse_invalid_jsonrpc_version() {
+        let json = r#"{"jsonrpc":"1.0","id":1,"method":"fs.read","params":{}}"#;
+        assert!(parse_request(json).is_err());
+    }
+
+    #[test]
+    fn test_parse_missing_id() {
+        let json = r#"{"jsonrpc":"2.0","method":"fs.read","params":{}}"#;
+        assert!(parse_request(json).is_err());
+    }
+
+    #[test]
+    fn test_parse_missing_method() {
+        let json = r#"{"jsonrpc":"2.0","id":1,"params":{}}"#;
+        assert!(parse_request(json).is_err());
+    }
+
+    #[test]
+    fn test_validate_method() {
+        assert!(validate_method("initialize").is_ok());
+        assert!(validate_method("fs.read").is_ok());
+        assert!(validate_method("fs.write").is_ok());
+        assert!(validate_method("cmd.run").is_ok());
+        assert!(validate_method("invalid.method").is_err());
+    }
+
+    #[test]
+    fn test_create_success_response() {
+        let response =
+            create_success_response(RpcId::Number(1), serde_json::json!({"result": "success"}));
+
+        assert_eq!(response.jsonrpc, "2.0");
+        assert_eq!(response.id, RpcId::Number(1));
+        assert!(response.result.is_some());
+        assert!(response.error.is_none());
+    }
+
+    #[test]
+    fn test_create_error_response() {
+        let response = create_error_response(
+            RpcId::Number(1),
+            McpErrorCode::PolicyDeny,
+            None,
+            Some(serde_json::json!({"rule": "test"})),
+        );
+
+        assert_eq!(response.jsonrpc, "2.0");
+        assert_eq!(response.id, RpcId::Number(1));
+        assert!(response.result.is_none());
+
+        let error = response.error.unwrap();
+        assert_eq!(error.code, McpErrorCode::PolicyDeny as i32);
+        assert_eq!(error.message, "Policy denied the operation");
+    }
+
+    #[test]
+    fn test_create_notification() {
+        let notification = create_notification(
+            "mcp.handshake".to_string(),
+            serde_json::json!({"name": "test"}),
+        );
+
+        assert_eq!(notification.jsonrpc, "2.0");
+        assert_eq!(notification.method, "mcp.handshake");
+    }
+}

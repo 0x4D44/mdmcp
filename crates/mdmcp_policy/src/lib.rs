@@ -1,0 +1,545 @@
+//! # mdmcp_policy
+//!
+//! Policy definition, validation, and enforcement for the mdmcp server.
+//! This crate handles loading YAML policy files, validating their contents,
+//! and providing runtime policy checks for file access and command execution.
+
+use anyhow::{Context, Result};
+use regex::Regex;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use thiserror::Error;
+
+#[derive(Error, Debug)]
+pub enum PolicyError {
+    #[error("Policy file not found: {0}")]
+    FileNotFound(String),
+    #[error("Invalid YAML: {0}")]
+    InvalidYaml(String),
+    #[error("Invalid regex pattern in command {command}: {pattern}")]
+    InvalidRegex { command: String, pattern: String },
+    #[error("Duplicate command ID: {0}")]
+    DuplicateCommand(String),
+    #[error("Invalid path: {0}")]
+    InvalidPath(String),
+    #[error("Command not found: {0}")]
+    CommandNotFound(String),
+    #[error("Policy denied: {rule}")]
+    PolicyDenied { rule: String },
+}
+
+/// Root policy configuration structure
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct Policy {
+    pub version: u32,
+    #[serde(default)]
+    pub deny_network_fs: bool,
+    pub allowed_roots: Vec<String>,
+    #[serde(default)]
+    pub write_rules: Vec<WriteRule>,
+    #[serde(default)]
+    pub commands: Vec<CommandRule>,
+    #[serde(default)]
+    pub logging: LoggingConfig,
+    #[serde(default)]
+    pub limits: LimitsConfig,
+}
+
+/// Write permission rule for specific paths
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct WriteRule {
+    pub path: String,
+    #[serde(default)]
+    pub recursive: bool,
+    #[serde(default = "default_max_file_bytes")]
+    pub max_file_bytes: u64,
+    #[serde(default)]
+    pub create_if_missing: bool,
+}
+
+/// Command execution rule
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct CommandRule {
+    pub id: String,
+    pub exec: String,
+    #[serde(default)]
+    pub args: ArgsPolicy,
+    #[serde(default)]
+    pub cwd_policy: CwdPolicy,
+    #[serde(default)]
+    pub env_allowlist: Vec<String>,
+    #[serde(default = "default_timeout_ms")]
+    pub timeout_ms: u64,
+    #[serde(default = "default_max_output_bytes")]
+    pub max_output_bytes: u64,
+    #[serde(default)]
+    pub platform: Vec<String>,
+}
+
+/// Argument validation policy for commands
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+pub struct ArgsPolicy {
+    #[serde(default)]
+    pub allow: Vec<String>,
+    #[serde(default)]
+    pub fixed: Vec<String>,
+    #[serde(default)]
+    pub patterns: Vec<ArgPattern>,
+}
+
+/// Argument pattern for regex validation
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ArgPattern {
+    #[serde(rename = "type")]
+    pub pattern_type: String,
+    pub value: String,
+}
+
+/// Working directory policy for commands
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CwdPolicy {
+    #[default]
+    WithinRoot,
+    Fixed,
+    None,
+}
+
+/// Logging configuration
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct LoggingConfig {
+    #[serde(default = "default_log_level")]
+    pub level: String,
+    pub file: Option<String>,
+    #[serde(default)]
+    pub redact: Vec<String>,
+}
+
+impl Default for LoggingConfig {
+    fn default() -> Self {
+        Self {
+            level: default_log_level(),
+            file: None,
+            redact: vec!["env".to_string()],
+        }
+    }
+}
+
+/// Resource limits configuration
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct LimitsConfig {
+    #[serde(default = "default_max_read_bytes")]
+    pub max_read_bytes: u64,
+    #[serde(default = "default_max_cmd_concurrency")]
+    pub max_cmd_concurrency: u32,
+}
+
+impl Default for LimitsConfig {
+    fn default() -> Self {
+        Self {
+            max_read_bytes: default_max_read_bytes(),
+            max_cmd_concurrency: default_max_cmd_concurrency(),
+        }
+    }
+}
+
+/// Compiled policy for runtime use
+#[derive(Debug, Clone)]
+pub struct CompiledPolicy {
+    pub policy: Policy,
+    pub allowed_roots_canonical: Vec<PathBuf>,
+    pub write_rules_canonical: Vec<CompiledWriteRule>,
+    pub commands_by_id: HashMap<String, CompiledCommand>,
+    pub policy_hash: String,
+}
+
+/// Compiled write rule with canonical path
+#[derive(Debug, Clone)]
+pub struct CompiledWriteRule {
+    pub path_canonical: PathBuf,
+    pub recursive: bool,
+    pub max_file_bytes: u64,
+    pub create_if_missing: bool,
+}
+
+/// Compiled command with regex patterns
+#[derive(Debug, Clone)]
+pub struct CompiledCommand {
+    pub rule: CommandRule,
+    pub exec_canonical: PathBuf,
+    pub arg_patterns: Vec<Regex>,
+}
+
+impl Policy {
+    /// Load policy from YAML file
+    pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, PolicyError> {
+        let path = path.as_ref();
+        let contents = std::fs::read_to_string(path)
+            .map_err(|_| PolicyError::FileNotFound(path.display().to_string()))?;
+
+        Self::from_yaml(&contents)
+    }
+
+    /// Parse policy from YAML string
+    pub fn from_yaml(yaml: &str) -> Result<Self, PolicyError> {
+        serde_yaml::from_str(yaml).map_err(|e| PolicyError::InvalidYaml(e.to_string()))
+    }
+
+    /// Compile policy for runtime use
+    pub fn compile(self) -> Result<CompiledPolicy> {
+        let mut allowed_roots_canonical = Vec::new();
+        for root in &self.allowed_roots {
+            let expanded = expand_path(root)?;
+            let canonical = canonicalize_path(&expanded)?;
+            allowed_roots_canonical.push(canonical);
+        }
+
+        let mut write_rules_canonical = Vec::new();
+        for rule in &self.write_rules {
+            let expanded = expand_path(&rule.path)?;
+            let canonical = canonicalize_path(&expanded)?;
+            write_rules_canonical.push(CompiledWriteRule {
+                path_canonical: canonical,
+                recursive: rule.recursive,
+                max_file_bytes: rule.max_file_bytes,
+                create_if_missing: rule.create_if_missing,
+            });
+        }
+
+        let mut commands_by_id = HashMap::new();
+        for cmd in &self.commands {
+            if commands_by_id.contains_key(&cmd.id) {
+                return Err(PolicyError::DuplicateCommand(cmd.id.clone()).into());
+            }
+
+            // Check if command is supported on current platform
+            if !cmd.platform.is_empty() && !is_platform_supported(&cmd.platform) {
+                continue; // Skip commands not supported on this platform
+            }
+
+            let exec_path = Path::new(&cmd.exec);
+            let exec_canonical = if exec_path.is_absolute() {
+                canonicalize_path(exec_path)?
+            } else {
+                // Try to find in PATH
+                find_in_path(&cmd.exec)?
+            };
+
+            let mut arg_patterns = Vec::new();
+            for pattern in &cmd.args.patterns {
+                let regex = Regex::new(&pattern.value).map_err(|_| PolicyError::InvalidRegex {
+                    command: cmd.id.clone(),
+                    pattern: pattern.value.clone(),
+                })?;
+                arg_patterns.push(regex);
+            }
+
+            let compiled_cmd = CompiledCommand {
+                rule: cmd.clone(),
+                exec_canonical,
+                arg_patterns,
+            };
+            commands_by_id.insert(cmd.id.clone(), compiled_cmd);
+        }
+
+        let policy_hash = compute_policy_hash(&self)?;
+
+        Ok(CompiledPolicy {
+            policy: self,
+            allowed_roots_canonical,
+            write_rules_canonical,
+            commands_by_id,
+            policy_hash,
+        })
+    }
+}
+
+impl CompiledPolicy {
+    /// Check if a path is within allowed roots
+    pub fn is_path_allowed(&self, path: &Path) -> Result<bool> {
+        let canonical = canonicalize_path(path)?;
+
+        for allowed_root in &self.allowed_roots_canonical {
+            if canonical.starts_with(allowed_root) {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
+
+    /// Find write rule for a path
+    pub fn find_write_rule(&self, path: &Path) -> Result<Option<&CompiledWriteRule>> {
+        let canonical = canonicalize_path(path)?;
+
+        for rule in &self.write_rules_canonical {
+            if rule.recursive {
+                if canonical.starts_with(&rule.path_canonical) {
+                    return Ok(Some(rule));
+                }
+            } else if canonical == rule.path_canonical {
+                return Ok(Some(rule));
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// Get command by ID
+    pub fn get_command(&self, id: &str) -> Result<&CompiledCommand, PolicyError> {
+        self.commands_by_id
+            .get(id)
+            .ok_or_else(|| PolicyError::CommandNotFound(id.to_string()))
+    }
+
+    /// Validate command arguments
+    pub fn validate_args(&self, cmd: &CompiledCommand, args: &[String]) -> Result<(), PolicyError> {
+        // If fixed args are specified, args must match exactly
+        if !cmd.rule.args.fixed.is_empty() {
+            if args != cmd.rule.args.fixed {
+                return Err(PolicyError::PolicyDenied {
+                    rule: "fixedArgsOnly".to_string(),
+                });
+            }
+            return Ok(());
+        }
+
+        // Check each argument
+        for arg in args {
+            let mut allowed = false;
+
+            // Check against allow list
+            if cmd.rule.args.allow.contains(arg) {
+                allowed = true;
+            }
+
+            // Check against regex patterns
+            if !allowed {
+                for pattern in &cmd.arg_patterns {
+                    if pattern.is_match(arg) {
+                        allowed = true;
+                        break;
+                    }
+                }
+            }
+
+            if !allowed {
+                return Err(PolicyError::PolicyDenied {
+                    rule: format!("argNotAllowed:{}", arg),
+                });
+            }
+        }
+
+        Ok(())
+    }
+}
+
+fn expand_path(path: &str) -> Result<PathBuf> {
+    if path.starts_with('~') {
+        let home = dirs::home_dir().context("Failed to get home directory")?;
+        Ok(home.join(&path[2..]))
+    } else {
+        Ok(PathBuf::from(path))
+    }
+}
+
+fn canonicalize_path(path: &Path) -> Result<PathBuf> {
+    path.canonicalize()
+        .with_context(|| format!("Failed to canonicalize path: {}", path.display()))
+}
+
+fn find_in_path(program: &str) -> Result<PathBuf> {
+    if let Ok(path) = which::which(program) {
+        Ok(path)
+    } else {
+        Err(PolicyError::InvalidPath(format!("Program not found in PATH: {}", program)).into())
+    }
+}
+
+fn is_platform_supported(platforms: &[String]) -> bool {
+    let current_platform = if cfg!(target_os = "windows") {
+        "windows"
+    } else if cfg!(target_os = "macos") {
+        "macos"
+    } else if cfg!(target_os = "linux") {
+        "linux"
+    } else {
+        return false;
+    };
+
+    platforms.iter().any(|p| p == current_platform)
+}
+
+fn compute_policy_hash(policy: &Policy) -> Result<String> {
+    let json = serde_json::to_string(policy)?;
+    let mut hasher = Sha256::new();
+    hasher.update(json.as_bytes());
+    let result = hasher.finalize();
+    Ok(hex::encode(result))
+}
+
+// Default value functions
+fn default_max_file_bytes() -> u64 {
+    10_000_000 // 10MB
+}
+
+fn default_timeout_ms() -> u64 {
+    30_000 // 30 seconds
+}
+
+fn default_max_output_bytes() -> u64 {
+    1_000_000 // 1MB
+}
+
+fn default_log_level() -> String {
+    "info".to_string()
+}
+
+fn default_max_read_bytes() -> u64 {
+    5_000_000 // 5MB
+}
+
+fn default_max_cmd_concurrency() -> u32 {
+    2
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_policy_yaml_parsing() {
+        let yaml = r#"
+version: 1
+deny_network_fs: true
+allowed_roots:
+  - "~/test"
+write_rules:
+  - path: "~/test/output"
+    recursive: true
+    max_file_bytes: 1000000
+commands:
+  - id: "test"
+    exec: "/bin/echo"
+    args:
+      allow: ["hello"]
+    platform: ["linux", "macos"]
+"#;
+
+        let policy = Policy::from_yaml(yaml).unwrap();
+        assert_eq!(policy.version, 1);
+        assert!(policy.deny_network_fs);
+        assert_eq!(policy.allowed_roots.len(), 1);
+        assert_eq!(policy.commands.len(), 1);
+        assert_eq!(policy.commands[0].id, "test");
+    }
+
+    #[test]
+    fn test_policy_compilation() {
+        let temp_dir = tempdir().unwrap();
+        let test_root = temp_dir.path().to_str().unwrap();
+
+        let policy = Policy {
+            version: 1,
+            deny_network_fs: false,
+            allowed_roots: vec![test_root.to_string()],
+            write_rules: vec![WriteRule {
+                path: test_root.to_string(),
+                recursive: true,
+                max_file_bytes: 1000000,
+                create_if_missing: true,
+            }],
+            commands: vec![],
+            logging: LoggingConfig::default(),
+            limits: LimitsConfig::default(),
+        };
+
+        let compiled = policy.compile().unwrap();
+        assert_eq!(compiled.allowed_roots_canonical.len(), 1);
+        assert_eq!(compiled.write_rules_canonical.len(), 1);
+    }
+
+    #[test]
+    fn test_path_validation() {
+        let temp_dir = tempdir().unwrap();
+        let test_root = temp_dir.path();
+
+        let policy = Policy {
+            version: 1,
+            deny_network_fs: false,
+            allowed_roots: vec![test_root.to_str().unwrap().to_string()],
+            write_rules: vec![],
+            commands: vec![],
+            logging: LoggingConfig::default(),
+            limits: LimitsConfig::default(),
+        };
+
+        let compiled = policy.compile().unwrap();
+
+        // Create a test file within the allowed root
+        let allowed_file = test_root.join("allowed.txt");
+        std::fs::write(&allowed_file, "test").unwrap();
+        assert!(compiled.is_path_allowed(&allowed_file).unwrap());
+
+        // Test a file outside the allowed root (if possible)
+        let temp_dir2 = tempdir().unwrap();
+        let forbidden_file = temp_dir2.path().join("forbidden.txt");
+        std::fs::write(&forbidden_file, "test").unwrap();
+        assert!(!compiled.is_path_allowed(&forbidden_file).unwrap());
+    }
+
+    #[test]
+    fn test_command_arg_validation() {
+        let cmd = CompiledCommand {
+            rule: CommandRule {
+                id: "test".to_string(),
+                exec: "/bin/echo".to_string(),
+                args: ArgsPolicy {
+                    allow: vec!["hello".to_string(), "world".to_string()],
+                    fixed: vec![],
+                    patterns: vec![],
+                },
+                cwd_policy: CwdPolicy::WithinRoot,
+                env_allowlist: vec![],
+                timeout_ms: 30000,
+                max_output_bytes: 1000000,
+                platform: vec!["linux".to_string()],
+            },
+            exec_canonical: PathBuf::from("/bin/echo"),
+            arg_patterns: vec![],
+        };
+
+        let policy = CompiledPolicy {
+            policy: Policy {
+                version: 1,
+                deny_network_fs: false,
+                allowed_roots: vec![],
+                write_rules: vec![],
+                commands: vec![],
+                logging: LoggingConfig::default(),
+                limits: LimitsConfig::default(),
+            },
+            allowed_roots_canonical: vec![],
+            write_rules_canonical: vec![],
+            commands_by_id: HashMap::new(),
+            policy_hash: "test".to_string(),
+        };
+
+        // Test allowed arguments
+        assert!(policy.validate_args(&cmd, &["hello".to_string()]).is_ok());
+        assert!(policy.validate_args(&cmd, &["world".to_string()]).is_ok());
+
+        // Test disallowed argument
+        assert!(policy
+            .validate_args(&cmd, &["forbidden".to_string()])
+            .is_err());
+    }
+}

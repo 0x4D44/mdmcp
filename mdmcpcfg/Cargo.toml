@@ -1,0 +1,27 @@
+[package]
+name = "mdmcpcfg"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+serde_json = "1"
+schemars = "0.8"
+reqwest = { version = "0.12", features = ["json","rustls-tls"] }
+sha2 = "0.10"
+hex = "0.4"
+minisign-verify = "0.2"
+tempfile = "3"
+dirs = "5"
+edit = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+shellexpand = "3.1"
+which = "6.0"
+mdmcp_policy = { path = "../crates/mdmcp_policy" }
+mdmcp_common = { path = "../crates/mdmcp_common" }

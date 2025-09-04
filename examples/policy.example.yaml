@@ -1,0 +1,174 @@
+# Example MCP Server Policy Configuration
+# This file demonstrates a comprehensive policy configuration for the mdmcp server.
+# Adjust paths and commands according to your specific environment and security requirements.
+
+version: 1
+
+# Deny access to network-mounted filesystems for security
+denyNetworkFS: true
+
+# Define allowed root directories for file operations
+# All file read/write operations must be within these directories
+allowedRoots:
+  - "~/code"                    # User code directory
+  - "~/Documents/projects"      # Project documents
+  - "/tmp/mdmcp-scratch"        # Temporary workspace (Unix)
+  - "C:/Temp/mdmcp-scratch"     # Temporary workspace (Windows)
+
+# Write permissions for specific directories
+writeRules:
+  - path: "~/code/scratch"
+    recursive: true
+    maxFileBytes: 10000000      # 10MB max file size
+    createIfMissing: true
+
+  - path: "/tmp/mdmcp-scratch"
+    recursive: true
+    maxFileBytes: 5000000       # 5MB max file size
+    createIfMissing: true
+
+  - path: "C:/Temp/mdmcp-scratch"
+    recursive: true
+    maxFileBytes: 5000000       # 5MB max file size
+    createIfMissing: true
+
+# Command execution rules
+commands:
+  # Directory listing (Unix)
+  - id: "ls"
+    exec: "/bin/ls"
+    args:
+      allow: ["-l", "-la", "-a", "-h", "-t", "-r"]
+    cwdPolicy: "withinRoot"
+    envAllowlist: []
+    timeoutMs: 5000
+    maxOutputBytes: 1000000
+    platform: ["linux", "macos"]
+
+  # Directory listing (Windows)
+  - id: "dir"
+    exec: "C:/Windows/System32/cmd.exe"
+    args:
+      fixed: ["/c", "dir"]
+    cwdPolicy: "withinRoot"
+    envAllowlist: []
+    timeoutMs: 5000
+    maxOutputBytes: 1000000
+    platform: ["windows"]
+
+  # File search with ripgrep
+  - id: "rg"
+    exec: "/usr/bin/rg"
+    args:
+      allow: ["--vimgrep", "--hidden", "--line-number", "--no-messages", "--max-count"]
+      patterns:
+        - type: "regex"
+          value: "^[\\w\\-\\./@:+#*?\\[\\]\\s]+$"  # Safe search patterns
+    cwdPolicy: "withinRoot"
+    envAllowlist: ["RIPGREP_CONFIG_PATH"]
+    timeoutMs: 30000
+    maxOutputBytes: 5000000
+    platform: ["linux", "macos"]
+
+  # Git operations (read-only)
+  - id: "git"
+    exec: "/usr/bin/git"
+    args:
+      allow: [
+        "status", "log", "show", "diff", "rev-parse", "describe",
+        "branch", "tag", "remote", "config", "--get"
+      ]
+    cwdPolicy: "withinRoot"
+    envAllowlist: ["GIT_CONFIG_GLOBAL", "GIT_ALLOW_PROTOCOL"]
+    timeoutMs: 30000
+    maxOutputBytes: 5000000
+    platform: ["linux", "macos"]
+
+  # File operations
+  - id: "cat"
+    exec: "/bin/cat"
+    args:
+      patterns:
+        - type: "regex"
+          value: "^[\\w\\-\\./@:+\\s]+$"  # Safe file paths only
+    cwdPolicy: "withinRoot"
+    envAllowlist: []
+    timeoutMs: 10000
+    maxOutputBytes: 2000000
+    platform: ["linux", "macos"]
+
+  - id: "head"
+    exec: "/usr/bin/head"
+    args:
+      allow: ["-n"]
+      patterns:
+        - type: "regex"
+          value: "^[\\w\\-\\./@:+\\s]+$"  # Safe file paths only
+    cwdPolicy: "withinRoot"
+    envAllowlist: []
+    timeoutMs: 5000
+    maxOutputBytes: 1000000
+    platform: ["linux", "macos"]
+
+  - id: "tail"
+    exec: "/usr/bin/tail"
+    args:
+      allow: ["-n", "-f"]
+      patterns:
+        - type: "regex"
+          value: "^[\\w\\-\\./@:+\\s]+$"  # Safe file paths only
+    cwdPolicy: "withinRoot"
+    envAllowlist: []
+    timeoutMs: 5000
+    maxOutputBytes: 1000000
+    platform: ["linux", "macos"]
+
+  # Basic text processing
+  - id: "wc"
+    exec: "/usr/bin/wc"
+    args:
+      allow: ["-l", "-w", "-c", "-m"]
+      patterns:
+        - type: "regex"
+          value: "^[\\w\\-\\./@:+\\s]+$"
+    cwdPolicy: "withinRoot"
+    envAllowlist: []
+    timeoutMs: 10000
+    maxOutputBytes: 100000
+    platform: ["linux", "macos"]
+
+  # Find files (restricted)
+  - id: "find"
+    exec: "/usr/bin/find"
+    args:
+      allow: ["-name", "-type", "-maxdepth", "-mindepth", "-newer", "-size"]
+      patterns:
+        - type: "regex"
+          value: "^[\\w\\-\\./@:+*?\\[\\]\\s]+$"
+    cwdPolicy: "withinRoot"
+    envAllowlist: []
+    timeoutMs: 30000
+    maxOutputBytes: 2000000
+    platform: ["linux", "macos"]
+
+  # PowerShell (Windows) - limited commands
+  - id: "powershell-get"
+    exec: "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
+    args:
+      fixed: ["-Command", "Get-ChildItem"]
+    cwdPolicy: "withinRoot"
+    envAllowlist: []
+    timeoutMs: 10000
+    maxOutputBytes: 1000000
+    platform: ["windows"]
+
+# Logging configuration
+logging:
+  level: "info"
+  file: "~/.mdmcp/mdmcpsrvr.log.jsonl"
+  redact: ["env"]  # Redact environment variables in logs
+
+# Resource limits
+limits:
+  maxReadBytes: 20000000      # 20MB maximum read size
+  maxCmdConcurrency: 3        # Maximum 3 concurrent commands
