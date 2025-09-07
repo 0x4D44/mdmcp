@@ -1,8 +1,6 @@
 //! # Installation and update commands
 //!
 //! This module handles downloading, installing, and updating the mdmcpsrvr binary,
-//! as well as configuring Claude Desktop to use the MCP server.
-
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -103,7 +101,7 @@ pub async fn run(
     local: bool,
     local_path: Option<String>,
 ) -> Result<()> {
-    println!("🔧 Installing mdmcp MCP server...");
+    println!("🛠️ Installing mdmcp MCP server...");
 
     if local {
         // Explicit local install
@@ -122,7 +120,7 @@ pub async fn run(
                         .await
                         .unwrap_or_else(|_| "unknown".to_string());
                     println!(
-                        "🔍 Found local server binary: {} (version {})",
+                        "🔎 Found local server binary: {} (version {})",
                         local_binary.display(),
                         version
                     );
@@ -150,16 +148,16 @@ pub async fn update(channel: String, rollback: bool, force: bool) -> Result<()> 
     let paths = Paths::new()?;
 
     if rollback {
-        println!("🔄 Rolling back to previous version...");
+        println!("⏪ Rolling back to previous version...");
         // TODO: Implement rollback functionality
         bail!("Rollback functionality not yet implemented");
     }
 
-    println!("🔄 Updating mdmcp MCP server (channel: {})...", channel);
+    println!("🔧 Updating mdmcp MCP server (channel: {})...", channel);
 
     // Check current version
     if let Some(current_info) = InstallationInfo::load(&paths)? {
-        println!("📌 Current version: {}", current_info.version);
+        println!("ℹ️ Current version: {}", current_info.version);
 
         // Verify current binary integrity
         let binary_path = Path::new(&current_info.binary_path);
@@ -187,7 +185,7 @@ pub async fn update(channel: String, rollback: bool, force: bool) -> Result<()> 
                     .await
                     .unwrap_or_else(|_| "unknown".to_string());
                 println!(
-                    "🔍 Found local server binary: {} (version {})",
+                    "🔎 Found local server binary: {} (version {})",
                     local_binary.display(),
                     version
                 );
@@ -215,11 +213,11 @@ async fn update_from_github(channel: String, paths: &Paths, force: bool) -> Resu
 
     // Check current version and compare
     if let Some(current_info) = InstallationInfo::load(paths)? {
-        println!("📌 Current version: {}", current_info.version);
-        println!("🆕 Available version: {}", release.tag_name);
+        println!("ℹ️ Current version: {}", current_info.version);
+        println!("📦 Available version: {}", release.tag_name);
 
         if current_info.version == release.tag_name && !force {
-            println!("✅ Already up to date!");
+            println!("✔ Already up to date!");
             return Ok(());
         }
 
@@ -232,12 +230,12 @@ async fn update_from_github(channel: String, paths: &Paths, force: bool) -> Resu
             // Ask for confirmation
             println!("❓ Update to version {}?", release.tag_name);
             if !prompt_user_confirmation()? {
-                println!("❌ Update cancelled");
+                println!("✖ Update cancelled");
                 return Ok(());
             }
         }
     } else {
-        println!("🆕 Installing version: {}", release.tag_name);
+        println!("📦 Installing version: {}", release.tag_name);
     }
 
     // Backup current binary
@@ -263,7 +261,7 @@ async fn update_from_github(channel: String, paths: &Paths, force: bool) -> Resu
 
 /// Update from local binary
 async fn update_from_local_binary(paths: &Paths, source_binary: &Path, force: bool) -> Result<()> {
-    println!("📦 Updating from local binary: {}", source_binary.display());
+    println!("📂 Updating from local binary: {}", source_binary.display());
 
     // Validate local binary
     if !source_binary.exists() {
@@ -286,21 +284,21 @@ async fn update_from_local_binary(paths: &Paths, source_binary: &Path, force: bo
         let current_version = &current_info.version;
         let new_version_tag = format!("{} (local)", version);
 
-        println!("📌 Current version: {}", current_version);
-        println!("🆕 Available version: {}", new_version_tag);
+        println!("ℹ️ Current version: {}", current_version);
+        println!("📦 Available version: {}", new_version_tag);
 
         // Try to get actual version of currently installed binary for better comparison
         let current_binary = paths.server_binary();
         if current_binary.exists() {
             if let Ok(actual_current_version) = test_local_binary_version(&current_binary).await {
                 println!(
-                    "🔍 Current binary reports version: {}",
+                    "🔎 Current binary reports version: {}",
                     actual_current_version
                 );
 
                 // Compare the actual running versions, not just the stored metadata
                 if actual_current_version == version && version != "local" && !force {
-                    println!("✅ Already up to date - both binaries report same version!");
+                    println!("✔ Already up to date - both binaries report same version!");
                     return Ok(());
                 }
             }
@@ -308,7 +306,7 @@ async fn update_from_local_binary(paths: &Paths, source_binary: &Path, force: bo
 
         // Only skip if versions are identical AND the current installation is also local
         if current_info.version == new_version_tag && version != "local" && !force {
-            println!("✅ Already up to date with local version!");
+            println!("✔ Already up to date with local version!");
             return Ok(());
         }
 
@@ -316,7 +314,7 @@ async fn update_from_local_binary(paths: &Paths, source_binary: &Path, force: bo
             println!("⚠️  Both current and new versions are detected as 'local' - proceeding with update to ensure binary is current");
         }
     } else {
-        println!("🆕 New version: {} (local)", version);
+        println!("📦 New version: {} (local)", version);
     }
 
     // Backup current binary
@@ -353,7 +351,7 @@ async fn install_from_github(dest_dir: Option<String>, configure_claude: bool) -
 
     // Download the latest release
     let release = fetch_latest_release().await?;
-    println!("📦 Found release: {}", release.tag_name);
+    println!("🔎 Found release: {}", release.tag_name);
 
     let binary_path = paths.server_binary();
     download_binary(&release, &binary_path).await?;
@@ -405,7 +403,7 @@ async fn install_from_local_binary(
     source_binary: &Path,
 ) -> Result<()> {
     println!(
-        "📦 Installing from local binary: {}",
+        "📂 Installing from local binary: {}",
         source_binary.display()
     );
 
@@ -571,7 +569,7 @@ fn set_executable_permissions(path: &Path) -> Result<()> {
 
 /// Log GitHub failure information
 fn log_github_failure(error: &anyhow::Error) {
-    println!("❌ GitHub download failed: {}", error);
+    println!("✖ GitHub download failed: {}", error);
     println!("   URL: https://api.github.com/repos/mdmcp/mdmcp/releases/latest");
 }
 
@@ -587,6 +585,85 @@ fn prompt_user_confirmation() -> Result<bool> {
 
     let response = input.trim().to_lowercase();
     Ok(response.is_empty() || response.starts_with('y'))
+}
+
+/// Uninstall the MCP server binary and optionally clean configuration
+pub async fn uninstall(remove_policy: bool, remove_claude_config: bool, yes: bool) -> Result<()> {
+    let paths = Paths::new()?;
+
+    println!("🗑️ Uninstalling mdmcp MCP server...");
+    if !yes {
+        println!(
+            "This will remove the server binary{}{}.",
+            if remove_policy { ", policy file" } else { "" },
+            if remove_claude_config {
+                ", and Claude Desktop entry"
+            } else {
+                ""
+            }
+        );
+        print!("Proceed? [y/N]: ");
+        use std::io::{self, Write};
+        io::stdout().flush()?;
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        let resp = input.trim().to_lowercase();
+        if !(resp == "y" || resp == "yes") {
+            println!("Cancelled.");
+            return Ok(());
+        }
+    }
+
+    // Remove server binary
+    let bin = paths.server_binary();
+    if bin.exists() {
+        match std::fs::remove_file(&bin) {
+            Ok(_) => println!("✅ Removed binary: {}", bin.display()),
+            Err(e) => println!("⚠️  Failed to remove binary {}: {}", bin.display(), e),
+        }
+    } else {
+        println!("ℹ️  Binary not found: {}", bin.display());
+    }
+
+    // Remove backup binary if present
+    let backup = bin.with_extension("bak");
+    if backup.exists() {
+        let _ = std::fs::remove_file(&backup);
+    }
+
+    // Optionally remove policy file
+    if remove_policy {
+        if paths.policy_file.exists() {
+            match std::fs::remove_file(&paths.policy_file) {
+                Ok(_) => println!("✅ Removed policy: {}", paths.policy_file.display()),
+                Err(e) => println!(
+                    "⚠️  Failed to remove policy {}: {}",
+                    paths.policy_file.display(),
+                    e
+                ),
+            }
+        } else {
+            println!("ℹ️  Policy not found: {}", paths.policy_file.display());
+        }
+    }
+
+    // Optionally remove Claude Desktop entry
+    if remove_claude_config {
+        match ClaudeDesktopConfig::load_or_default() {
+            Ok(mut cfg) => {
+                cfg.remove_mdmcp_server();
+                if let Err(e) = cfg.save() {
+                    println!("⚠️  Failed to update Claude Desktop config: {}", e);
+                } else {
+                    println!("✅ Removed mdmcp entry from Claude Desktop config");
+                }
+            }
+            Err(e) => println!("⚠️  Could not load Claude Desktop config: {}", e),
+        }
+    }
+
+    println!("✅ Uninstall finished.");
+    Ok(())
 }
 
 /// Setup paths for installation (extracted common logic)
@@ -667,7 +744,7 @@ async fn download_binary(release: &GitHubRelease, dest_path: &Path) -> Result<()
         .find(|asset| asset.name.contains(&platform))
         .with_context(|| format!("No binary found for platform: {}", platform))?;
 
-    println!("⬇️  Downloading: {}", asset.name);
+    println!("📥 Downloading: {}", asset.name);
 
     let client = reqwest::Client::new();
     let response = client
@@ -713,7 +790,7 @@ async fn download_binary(release: &GitHubRelease, dest_path: &Path) -> Result<()
         );
     }
 
-    println!("✅ Binary downloaded: {}", dest_path.display());
+    println!("📦 Binary downloaded: {}", dest_path.display());
     Ok(())
 }
 
@@ -735,7 +812,7 @@ async fn create_default_policy(policy_path: &Path) -> Result<()> {
 
 /// Configure Claude Desktop to use the MCP server
 async fn configure_claude_desktop(paths: &Paths) -> Result<()> {
-    println!("🔧 Configuring Claude Desktop...");
+    println!("🧩 Configuring Claude Desktop...");
 
     let mut config = ClaudeDesktopConfig::load_or_default()?;
     config.add_mdmcp_server(&paths.server_binary(), &paths.policy_file)?;
@@ -779,92 +856,86 @@ fn calculate_sha256<P: AsRef<Path>>(path: P) -> Result<String> {
 
 /// Create the default policy file content
 fn create_default_policy_content() -> Result<String> {
+    use mdmcp_policy::{ArgsPolicy, CommandRule, CwdPolicy, LimitsConfig, LoggingConfig, Policy, WriteRule};
     let home_dir = dirs::home_dir().context("Failed to get home directory")?;
-
-    // Convert paths to forward slashes for YAML compatibility
     let home_path = home_dir.to_string_lossy().replace('\\', "/");
-    let workspace_path = home_dir
-        .join("mdmcp-workspace")
-        .to_string_lossy()
-        .replace('\\', "/");
-    let users_path = if cfg!(target_os = "windows") {
-        "C:/Users"
-    } else {
-        "/tmp"
+    let workspace_path = home_dir.join("mdmcp-workspace").to_string_lossy().replace('\\', "/");
+    let users_path = if cfg!(target_os = "windows") { "C:/Users" } else { "/tmp" };
+
+    let mut commands: Vec<CommandRule> = Vec::new();
+
+    // Cross-platform commands
+    if cfg!(any(target_os = "linux", target_os = "macos")) {
+        commands.push(CommandRule {
+            id: "ls".into(),
+            exec: "/bin/ls".into(),
+            args: ArgsPolicy { allow: vec!["-l".into(), "-la".into(), "-a".into(), "-h".into(), "--color=never".into()], fixed: vec![], patterns: vec![] },
+            cwd_policy: CwdPolicy::WithinRoot,
+            env_allowlist: vec![],
+            timeout_ms: 5000,
+            max_output_bytes: 1_000_000,
+            platform: vec!["linux".into(), "macos".into()],
+            allow_any_args: true,
+        });
+        commands.push(CommandRule {
+            id: "cat".into(),
+            exec: "/bin/cat".into(),
+            args: ArgsPolicy { allow: vec![], fixed: vec![], patterns: vec![] },
+            cwd_policy: CwdPolicy::WithinRoot,
+            env_allowlist: vec![],
+            timeout_ms: 10_000,
+            max_output_bytes: 2_000_000,
+            platform: vec!["linux".into(), "macos".into()],
+            allow_any_args: true,
+        });
+    }
+
+    // Windows builtins via cmd
+    if cfg!(target_os = "windows") {
+        let windows_cmd = |id: &str, sub: &str| CommandRule {
+            id: id.into(),
+            exec: "C:/Windows/System32/cmd.exe".into(),
+            args: ArgsPolicy { allow: vec![], fixed: vec!["/c".into(), sub.into()], patterns: vec![] },
+            cwd_policy: CwdPolicy::WithinRoot,
+            env_allowlist: vec![],
+            timeout_ms: 10_000,
+            max_output_bytes: 2_000_000,
+            platform: vec!["windows".into()],
+            allow_any_args: true,
+        };
+        for (id, sub) in [
+            ("dir","dir"),("type","type"),("copy","copy"),("move","move"),
+            ("del","del"),("mkdir","mkdir"),("rmdir","rmdir")
+        ] { commands.push(windows_cmd(id, sub)); }
+
+        let win_exec = |id: &str, path: &str, timeout: u64, max_bytes: u64| CommandRule {
+            id: id.into(),
+            exec: path.into(),
+            args: ArgsPolicy { allow: vec![], fixed: vec![], patterns: vec![] },
+            cwd_policy: CwdPolicy::WithinRoot,
+            env_allowlist: vec![],
+            timeout_ms: timeout,
+            max_output_bytes: max_bytes,
+            platform: vec!["windows".into()],
+            allow_any_args: true,
+        };
+        commands.push(win_exec("findstr", "C:/Windows/System32/findstr.exe", 10_000, 4_000_000));
+        commands.push(win_exec("where",   "C:/Windows/System32/where.exe",   10_000, 2_000_000));
+        commands.push(win_exec("tree",    "C:/Windows/System32/tree.com",    10_000, 4_000_000));
+        commands.push(win_exec("tasklist","C:/Windows/System32/tasklist.exe",10_000, 4_000_000));
+        commands.push(win_exec("taskkill","C:/Windows/System32/taskkill.exe",10_000, 2_000_000));
+        commands.push(win_exec("systeminfo","C:/Windows/System32/systeminfo.exe",15_000, 4_000_000));
+        commands.push(win_exec("netstat","C:/Windows/System32/netstat.exe",  15_000, 4_000_000));
+    }
+
+    let policy = Policy {
+        version: 1,
+        deny_network_fs: true,
+        allowed_roots: vec![home_path, users_path.into()],
+        write_rules: vec![WriteRule { path: workspace_path, recursive: true, max_file_bytes: 10_000_000, create_if_missing: true }],
+        commands,
+        logging: LoggingConfig::default(),
+        limits: LimitsConfig::default(),
     };
-
-    let policy = format!(
-        r#"version: 1
-
-deny_network_fs: true
-
-allowed_roots:
-  - "{}"
-  - "{}"
-
-write_rules:
-  - path: "{}"
-    recursive: true
-    max_file_bytes: 10000000
-    create_if_missing: true
-
-commands:
-  - id: "ls"
-    exec: "/bin/ls"
-    args:
-      allow: ["-l", "-la", "-a", "-h", "--color=never"]
-    cwd_policy: "within_root"
-    env_allowlist: []
-    timeout_ms: 5000
-    max_output_bytes: 1000000
-    platform: ["linux", "macos"]
-
-  - id: "dir"
-    exec: "C:/Windows/System32/cmd.exe"
-    args:
-      fixed: ["/c", "dir"]
-    cwd_policy: "within_root"
-    env_allowlist: []
-    timeout_ms: 5000
-    max_output_bytes: 1000000
-    platform: ["windows"]
-
-  - id: "cat"
-    exec: "/bin/cat"
-    args:
-      patterns:
-        - type: "regex"
-          value: "^[\\w\\-\\./@:+#*?\\[\\]\\s]+$"
-    cwd_policy: "within_root"
-    env_allowlist: []
-    timeout_ms: 10000
-    max_output_bytes: 2000000
-    platform: ["linux", "macos"]
-
-  - id: "type"
-    exec: "C:/Windows/System32/cmd.exe"
-    args:
-      fixed: ["/c", "type"]
-      patterns:
-        - type: "regex"
-          value: "^[\\w\\-\\./@:+#*?\\[\\]\\s\\\\]+$"
-    cwd_policy: "within_root"
-    env_allowlist: []
-    timeout_ms: 10000
-    max_output_bytes: 2000000
-    platform: ["windows"]
-
-logging:
-  level: "info"
-  file: "~/.mdmcp/mdmcpsrvr.log.jsonl"
-  redact: ["env"]
-
-limits:
-  max_read_bytes: 5000000
-  max_cmd_concurrency: 2
-"#,
-        home_path, users_path, workspace_path
-    );
-
-    Ok(policy)
+    Ok(serde_yaml::to_string(&policy)?)
 }

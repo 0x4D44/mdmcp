@@ -61,6 +61,18 @@ enum Commands {
     Policy(PolicyCommands),
     /// Run system diagnostics
     Doctor,
+    /// Uninstall the MCP server binary and optionally clean config
+    Uninstall {
+        /// Also remove the policy file
+        #[arg(long)]
+        remove_policy: bool,
+        /// Also remove the Claude Desktop configuration entry
+        #[arg(long)]
+        remove_claude_config: bool,
+        /// Do not prompt for confirmation
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
     /// Send test requests to the server
     Run {
         /// JSON-RPC file to send
@@ -133,6 +145,11 @@ async fn main() -> Result<()> {
             } => policy::add_command(id, exec, allow_args, patterns).await,
         },
         Commands::Doctor => doctor::run().await,
+        Commands::Uninstall {
+            remove_policy,
+            remove_claude_config,
+            yes,
+        } => install::uninstall(remove_policy, remove_claude_config, yes).await,
         Commands::Run { jsonrpc_file } => {
             // TODO: Implement run command for smoke testing
             println!("Running smoke test with {}", jsonrpc_file);
