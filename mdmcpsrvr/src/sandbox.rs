@@ -73,9 +73,21 @@ pub async fn execute_command(config: ExecutionConfig) -> Result<ExecutionResult,
         cmd.current_dir(cwd);
     }
 
-    // Clear environment and set only allowed variables
+    // Prepare environment: start from filtered env, then optionally bootstrap MSVC if needed
+    let mut final_env = config.env.clone();
+
+    #[cfg(windows)]
+    {
+        if is_rust_tool(&config.executable) {
+            if let Err(e) = try_bootstrap_msvc_env(&mut final_env) {
+                warn!("MSVC env bootstrap failed: {}", e);
+            }
+        }
+    }
+
+    // Clear environment and set only allowed/bootstrapped variables
     cmd.env_clear();
-    for (key, value) in &config.env {
+    for (key, value) in &final_env {
         cmd.env(key, value);
     }
 
@@ -220,6 +232,82 @@ async fn wait_for_completion(
     })
 }
 
+#[cfg(windows)]
+fn is_rust_tool(exe: &Path) -> bool {
+    let name = exe
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    matches!(name.as_str(), "cargo" | "rustc" | "rustdoc")
+}
+
+#[cfg(windows)]
+fn try_bootstrap_msvc_env(env: &mut HashMap<String, String>) -> Result<(), Box<dyn std::error::Error>> {
+    use std::process::Command as StdCommand;
+
+    // Locate vswhere
+    let pf86 = std::env::var("ProgramFiles(x86)").or_else(|_| std::env::var("PROGRAMFILES(X86)"))?;
+    let vswhere_path = Path::new(&pf86)
+        .join("Microsoft Visual Studio")
+        .join("Installer")
+        .join("vswhere.exe");
+    if !vswhere_path.exists() {
+        // If vswhere is not present, silently return Ok; rustc may still discover via registry/paths
+        return Ok(());
+    }
+
+    let output = StdCommand::new(vswhere_path)
+        .arg("-latest")
+        .arg("-products").arg("*")
+        .arg("-requires").arg("Microsoft.VisualStudio.Component.VC.Tools.x86.x64")
+        .arg("-format").arg("json")
+        .output()?;
+    if !output.status.success() {
+        return Ok(());
+    }
+    let json = String::from_utf8_lossy(&output.stdout);
+    let val: serde_json::Value = serde_json::from_str(&json).unwrap_or(serde_json::Value::Null);
+    let install_path = val.as_array()
+        .and_then(|arr| arr.first())
+        .and_then(|o| o.get("installationPath"))
+        .and_then(|s| s.as_str());
+    let Some(install_path) = install_path else { return Ok(()); };
+
+    // Build vcvars64.bat path
+    let vcvars = Path::new(install_path)
+        .join("VC").join("Auxiliary").join("Build").join("vcvars64.bat");
+    if !vcvars.exists() {
+        return Ok(());
+    }
+
+    // Run "cmd /d /s /c call <vcvars64.bat> && set" to capture the environment after vcvars
+    let mut bootstrap = StdCommand::new("cmd");
+    bootstrap.arg("/d").arg("/s").arg("/c");
+    let cmdline = format!("call \"{}\" && set", vcvars.display());
+    bootstrap.arg(cmdline);
+
+    // Seed with our current env so vcvars augments it
+    bootstrap.env_clear();
+    for (k, v) in env.iter() {
+        bootstrap.env(k, v);
+    }
+
+    let out = bootstrap.output()?;
+    if !out.status.success() {
+        return Ok(());
+    }
+    let listing = String::from_utf8_lossy(&out.stdout);
+    for line in listing.lines() {
+        if let Some((k, v)) = line.split_once('=') {
+            if !k.is_empty() {
+                env.insert(k.to_string(), v.to_string());
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Apply platform-specific security constraints
 #[cfg(unix)]
 fn apply_security_constraints(cmd: &mut Command) -> Result<(), SandboxError> {
@@ -346,11 +434,75 @@ pub fn filter_environment(
 ) -> HashMap<String, String> {
     let mut filtered = HashMap::new();
 
-    // Always include basic environment variables for security
+    // Always include essential environment variables
     filtered.insert(
         "PATH".to_string(),
         std::env::var("PATH").unwrap_or_default(),
     );
+
+    // Preserve a minimal baseline needed by common toolchains
+    #[cfg(windows)]
+    {
+        // Preserve common Windows discovery variables used by VS/rustc and the shell
+        for key in [
+            "SYSTEMROOT",
+            "WINDIR",
+            "SYSTEMDRIVE",
+            "COMSPEC",
+            "PATHEXT",
+            "TEMP",
+            "TMP",
+            "APPDATA",
+            "LOCALAPPDATA",
+            "PROGRAMDATA",
+            "PROGRAMFILES",
+            "PROGRAMFILES(X86)",
+            "PROGRAMW6432",
+            "COMMONPROGRAMFILES",
+            "COMMONPROGRAMFILES(X86)",
+            "USERPROFILE",
+            "HOME",
+            // Rust/cargo specific homes
+            "CARGO_HOME",
+            "RUSTUP_HOME",
+            // Helpful CPU/arch hints some tools read
+            "NUMBER_OF_PROCESSORS",
+            "PROCESSOR_ARCHITECTURE",
+        ] {
+            if let Ok(val) = std::env::var(key) {
+                filtered.insert(key.to_string(), val);
+            }
+        }
+
+        // Sanitize PATH to avoid GNU coreutils link.exe shadowing MSVC's linker
+        if let Ok(path_val) = std::env::var("PATH") {
+            let parts: Vec<String> = path_val.split(';').map(|s| s.to_string()).collect();
+            let mut others = Vec::with_capacity(parts.len());
+            let mut git_usr = Vec::new();
+            let mut seen = std::collections::HashSet::new();
+            for p in parts.into_iter() {
+                let key = p.to_ascii_lowercase();
+                if !seen.insert(key.clone()) {
+                    continue; // dedupe
+                }
+                if key.contains("\\git\\usr\\bin") || key.contains("/git/usr/bin") {
+                    git_usr.push(p);
+                } else {
+                    others.push(p);
+                }
+            }
+            others.extend(git_usr);
+            filtered.insert("PATH".to_string(), others.join(";"));
+        }
+    }
+    #[cfg(unix)]
+    {
+        for key in ["HOME", "USER", "SHELL", "TMPDIR", "CARGO_HOME", "RUSTUP_HOME"] {
+            if let Ok(val) = std::env::var(key) {
+                filtered.insert(key.to_string(), val);
+            }
+        }
+    }
 
     // Add allowed environment variables
     for key in allowlist {

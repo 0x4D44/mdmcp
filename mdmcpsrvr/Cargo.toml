@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+build = "build.rs"
 
 [[bin]]
 name = "mdmcpsrvr"
@@ -46,3 +47,5 @@ windows-sys = { version = "0.59", features = ["Win32_System_Threading", "Win32_S
 [dev-dependencies]
 tempfile = "3.0"
 tokio-test = "0.4"
+
+[build-dependencies]

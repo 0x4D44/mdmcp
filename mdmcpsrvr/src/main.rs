@@ -99,7 +99,7 @@ async fn main() -> Result<()> {
     }
 
     // Create server instance
-    let server = server::Server::new(Arc::new(policy)).await?;
+    let server = server::Server::new(Arc::new(policy), config_path.clone()).await?;
 
     if cli.stdio {
         run_stdio_server(server).await?;

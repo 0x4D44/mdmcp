@@ -17,7 +17,8 @@ use mdmcp_common::{
 use mdmcp_policy::CompiledPolicy;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
 use tracing::{debug, error, info};
 
 use crate::audit::{
@@ -32,14 +33,15 @@ use crate::rpc::{
 
 /// Main MCP server instance
 pub struct Server {
-    policy: Arc<CompiledPolicy>,
+    policy: RwLock<Arc<CompiledPolicy>>, // hot-swappable policy
     auditor: Auditor,
-    command_catalog: CommandCatalog,
+    command_catalog: RwLock<CommandCatalog>, // rebuilt on policy reload
+    config_path: PathBuf,
 }
 
 impl Server {
     /// Create new server instance with compiled policy
-    pub async fn new(policy: Arc<CompiledPolicy>) -> Result<Self> {
+    pub async fn new(policy: Arc<CompiledPolicy>, config_path: PathBuf) -> Result<Self> {
         info!("Initializing MCP server");
 
         // Create audit configuration from policy
@@ -65,9 +67,10 @@ impl Server {
         );
 
         Ok(Server {
-            policy,
+            policy: RwLock::new(policy),
             auditor,
-            command_catalog,
+            command_catalog: RwLock::new(command_catalog),
+            config_path,
         })
     }
 
@@ -310,6 +313,22 @@ impl Server {
                         "additionalProperties": false
                     }
                 }
+                ,
+                {
+                    "name": "reload_policy",
+                    "description": "Reload the server policy from disk without restarting",
+                    "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false}
+                },
+                {
+                    "name": "server_info",
+                    "description": "Show server version, build time, current policy summary, and policy format details",
+                    "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false}
+                },
+                {
+                    "name": "Documentation",
+                    "description": "Usage guide for mdmcpcfg and mdmcpsrvr: install/update, manage policy (add/remove roots and commands)",
+                    "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false}
+                }
             ]
         });
 
@@ -346,13 +365,63 @@ impl Server {
         match tool_name {
             "read_file" => {
                 // Convert tool args to fs.read format
+                let encoding = tool_args
+                    .get("encoding")
+                    .cloned()
+                    .unwrap_or(serde_json::json!("utf8"));
                 let fs_params = serde_json::json!({
                     "path": tool_args.get("path"),
-                    "encoding": tool_args.get("encoding").unwrap_or(&serde_json::json!("utf8")),
+                    "encoding": encoding,
                     "offset": 0,
                     "length": 1_000_000 // Max length
                 });
-                self.handle_fs_read(ctx, id, fs_params).await
+
+                // Execute fs.read then adapt to tools/call content blocks
+                let resp = self.handle_fs_read(ctx, id.clone(), fs_params).await;
+                if let Some(err) = &resp.error {
+                    return create_error_response(id, McpErrorCode::Internal, Some(err.message.clone()), resp.error.as_ref().and_then(|e| e.data.clone()));
+                }
+                let raw = match resp.result {
+                    Some(v) => v,
+                    None => {
+                        return create_error_response(
+                            id,
+                            McpErrorCode::Internal,
+                            Some("fs.read returned no result".to_string()),
+                            None,
+                        )
+                    }
+                };
+
+                let parsed: Result<mdmcp_common::FsReadResult, _> = serde_json::from_value(raw);
+                let read_out = match parsed {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return create_error_response(
+                            id,
+                            McpErrorCode::Internal,
+                            Some(format!("Failed to parse fs.read result: {}", e)),
+                            None,
+                        )
+                    }
+                };
+
+                let mut content_blocks: Vec<serde_json::Value> = Vec::new();
+                content_blocks.push(serde_json::json!({
+                    "type": "text",
+                    "text": read_out.data,
+                }));
+                content_blocks.push(serde_json::json!({
+                    "type": "text",
+                    "text": format!("[note] bytes={}, sha256={}", read_out.bytes_read, read_out.sha256),
+                }));
+
+                let result = serde_json::json!({
+                    "content": content_blocks,
+                    "isError": false
+                });
+                self.auditor.log_success(ctx, SuccessDetails::default());
+                create_success_response(id, result)
             }
             "write_file" => {
                 // Convert tool args to fs.write format
@@ -363,7 +432,44 @@ impl Server {
                     "create": tool_args.get("create").unwrap_or(&serde_json::json!(true)),
                     "overwrite": tool_args.get("overwrite").unwrap_or(&serde_json::json!(true))
                 });
-                self.handle_fs_write(ctx, id, fs_params).await
+
+                // Execute fs.write then adapt to tools/call content blocks
+                let resp = self.handle_fs_write(ctx, id.clone(), fs_params).await;
+                if let Some(err) = &resp.error {
+                    return create_error_response(id, McpErrorCode::Internal, Some(err.message.clone()), resp.error.as_ref().and_then(|e| e.data.clone()));
+                }
+                let raw = match resp.result {
+                    Some(v) => v,
+                    None => {
+                        return create_error_response(
+                            id,
+                            McpErrorCode::Internal,
+                            Some("fs.write returned no result".to_string()),
+                            None,
+                        )
+                    }
+                };
+                let parsed: Result<mdmcp_common::FsWriteResult, _> = serde_json::from_value(raw);
+                let write_out = match parsed {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return create_error_response(
+                            id,
+                            McpErrorCode::Internal,
+                            Some(format!("Failed to parse fs.write result: {}", e)),
+                            None,
+                        )
+                    }
+                };
+                let result = serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": format!("Write successful. bytesWritten={}, sha256={}", write_out.bytes_written, write_out.sha256)
+                    }],
+                    "isError": false
+                });
+                self.auditor.log_success(ctx, SuccessDetails::default());
+                create_success_response(id, result)
             }
             "run_command" => {
                 // Convert tool args to cmd.run format
@@ -473,6 +579,8 @@ impl Server {
 
                 let directories: Vec<_> = self
                     .policy
+                    .read()
+                    .unwrap()
                     .allowed_roots_canonical
                     .iter()
                     .map(|path| path.to_string_lossy().to_string())
@@ -512,16 +620,14 @@ impl Server {
             }
             "list_available_commands" => {
                 debug!("Listing available commands from policy");
-
+                let policy = { self.policy.read().unwrap().clone() };
                 // Create human-readable text content
-                let text_content = if self.policy.commands_by_id.is_empty() {
+                let text_content = if policy.commands_by_id.is_empty() {
                     "No commands available in policy.".to_string()
                 } else {
-                    let mut content = format!(
-                        "Available commands ({} total):\n\n",
-                        self.policy.commands_by_id.len()
-                    );
-                    for (i, (cmd_id, cmd_rule)) in self.policy.commands_by_id.iter().enumerate() {
+                    let mut content =
+                        format!("Available commands ({} total):\n\n", policy.commands_by_id.len());
+                    for (i, (cmd_id, cmd_rule)) in policy.commands_by_id.iter().enumerate() {
                         content.push_str(&format!("{}. **{}**\n", i + 1, cmd_id));
                         content.push_str(&format!("   - Executable: {}\n", cmd_rule.rule.exec));
                         content
@@ -566,6 +672,111 @@ impl Server {
                     },
                 );
 
+                create_success_response(id, result)
+            }
+            "reload_policy" => {
+                match self.reload_policy().await {
+                    Ok(new_policy) => {
+                        let msg = format!(
+                            "Policy reloaded successfully. Hash: {}… | roots: {} | commands: {}",
+                            &new_policy.policy_hash[..16],
+                            new_policy.allowed_roots_canonical.len(),
+                            new_policy.commands_by_id.len()
+                        );
+                        let result = serde_json::json!({
+                            "content": [{"type": "text", "text": msg}],
+                            "isError": false
+                        });
+                        self.auditor.log_success(ctx, SuccessDetails::default());
+                        create_success_response(id, result)
+                    }
+                    Err(e) => {
+                        self.auditor
+                            .log_error(ctx, &format!("Policy reload failed: {}", e), None);
+                        create_error_response(
+                            id,
+                            McpErrorCode::Internal,
+                            Some(format!("Policy reload failed: {}", e)),
+                            None,
+                        )
+                    }
+                }
+            }
+            "server_info" => {
+                let policy = { self.policy.read().unwrap().clone() };
+                let version = env!("CARGO_PKG_VERSION");
+                let build_str = if let Some(epoch_str) = option_env!("BUILD_EPOCH") {
+                    if let Ok(secs) = epoch_str.parse::<i64>() {
+                        if let Some(dt) = chrono::DateTime::<chrono::Utc>::from_timestamp(secs, 0) {
+                            dt.format("%Y-%m-%d %H:%M:%S UTC").to_string()
+                        } else {
+                            "unknown".to_string()
+                        }
+                    } else {
+                        "unknown".to_string()
+                    }
+                } else {
+                    "unknown".to_string()
+                };
+
+                // Detailed policy format description (concise but informative)
+                let policy_format = r#"Policy v1 (YAML) fields:
+- version: number (required)
+- deny_network_fs: bool (default: false)
+- allowed_roots: [string path, ...] (required)
+- write_rules: [{ path, recursive, max_file_bytes, create_if_missing }]
+- commands: [{
+    id, exec (absolute path),
+    args: { allow: [string], fixed: [string], patterns: [{type: "regex", value: "..."}] },
+    cwd_policy: one of [within_root, fixed, none],
+    env_allowlist: [VAR,...], timeout_ms, max_output_bytes,
+    platform: ["windows"|"linux"|"macos"], allow_any_args: bool
+  }]
+- logging: { file: string?, redact: [string] }
+- limits: { max_read_bytes, max_cmd_concurrency }
+"#;
+
+                let summary = format!(
+                    "mdmcpsrvr v{}\nBuild: {}\nPolicy hash: {}\nAllowed roots: {}\nCommands: {}\n\nPolicy format:\n{}",
+                    version,
+                    build_str,
+                    &policy.policy_hash[..16],
+                    policy.allowed_roots_canonical.len(),
+                    policy.commands_by_id.len(),
+                    policy_format
+                );
+
+                let result = serde_json::json!({
+                    "content": [{"type":"text","text": summary}],
+                    "isError": false
+                });
+                self.auditor.log_success(ctx, SuccessDetails::default());
+                create_success_response(id, result)
+            }
+            "Documentation" | "documentation" => {
+                let policy = { self.policy.read().unwrap().clone() };
+                let version = env!("CARGO_PKG_VERSION");
+                let build_str = if let Some(epoch_str) = option_env!("BUILD_EPOCH") {
+                    if let Ok(secs) = epoch_str.parse::<i64>() {
+                        if let Some(dt) = chrono::DateTime::<chrono::Utc>::from_timestamp(secs, 0) {
+                            dt.format("%Y-%m-%d %H:%M:%S UTC").to_string()
+                        } else { "unknown".to_string() }
+                    } else { "unknown".to_string() }
+                } else { "unknown".to_string() };
+
+                let doc = format!(                r#"mdmcp Documentation\n\nServer: mdmcpsrvr v{} (build {})\nPolicy hash: {}… | roots: {} | commands: {}\n\nmdmcpcfg – Policy and Install CLI\n- Show policy: `mdmcpcfg policy show`\n- Edit policy: `mdmcpcfg policy edit` (opens your editor)\n- Validate policy: `mdmcpcfg policy validate`\n- Add allowed root: `mdmcpcfg policy add-root "<path>" --write`\n  • Adds to `allowed_roots` and (with --write) creates a write rule.\n- Add command: `mdmcpcfg policy add-command <id> --exec "<absolute_exec_path>"`\n  • Optional: `--allow <arg>` (repeatable), `--pattern <regex>` (repeatable).\n  • Defaults: `cwd_policy: within_root`, `allow_any_args: true`, sane timeouts.\n- Remove a rule or command: use `mdmcpcfg policy edit`, delete the YAML entry, then `mdmcpcfg policy validate`.\n\nInstalling and Updating mdmcpsrvr\n- Install latest release and configure Claude Desktop: `mdmcpcfg install`\n  • Optionally `--dest <dir>` to choose binary directory.\n  • `--local --local-path <path>` to install a locally built binary.\n- Update to latest: `mdmcpcfg update` (flags: `--channel stable|beta`, `--force`)\n  • Rollback is not yet implemented (`--rollback` will report unimplemented).\n- Uninstall: no dedicated command. To remove manually:\n  1) Stop clients using the server (e.g., close Claude Desktop).\n  2) Delete the server binary from the mdmcp bin dir.\n  3) Remove policy/config directory if desired.\n  4) Remove the mdmcp entry from Claude Desktop config (see below).\n\nClaude Desktop Integration\n- `mdmcpcfg install` adds an entry to Claude Desktop’s config pointing at mdmcpsrvr with `--config <policy> --stdio`.\n- Config paths (typical):\n  • Windows: `%APPDATA%/Claude/claude_desktop_config.json`\n  • macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`\n  • Linux: `~/.config/Claude/claude_desktop_config.json`\n\nUsing the MCP Tools\n- File I/O: `read_file`, `write_file` operate within allowed roots.\n- Commands: `run_command` executes catalog entries from the policy.\n- Discoverability:\n  • `list_accessible_directories` — shows allowed roots.\n  • `list_available_commands` — shows command catalog details.\n- Management:\n  • `server_info` — version, build, policy summary, policy format.\n  • `reload_policy` — reloads the policy file without restart.\n\nPolicy Authoring Tips\n- Start from defaults (`mdmcpcfg install` creates a sensible policy).\n- Keep `deny_network_fs: true` unless you explicitly need network mounts.\n- Restrict `allowed_roots` to the folders you actually use.\n- Prefer fixed/allow args for commands; use regex patterns carefully.\n- Never put secrets into logs.\n\nExamples\n- Add a dev workspace and allow writes:\n  `mdmcpcfg policy add-root "<your_dev_dir>" --write`\n- Add Cargo (Windows):\n  `mdmcpcfg policy add-command cargo --exec C:/Users/<you>/.cargo/bin/cargo.exe`\n- Add Git (Windows):\n  `mdmcpcfg policy add-command git --exec C:/Program Files/Git/bin/git.exe`\n- Build a project from Claude:\n  Use `cmd.run` with `commandId: "cargo"`, `args: ["build"]`, and set `cwd` to your project folder.\n\nNotes\n- The server runs commands directly (no implicit shell). Use `cmd.exe /c` or `/bin/sh -c` in a policy command if you need shell features.\n- On Windows/MSVC, the server bootstraps VS variables automatically (vcvars) for cargo/rustc so linking works like your normal shell.\n"#,
+                    version,
+                    build_str,
+                    &policy.policy_hash[..16],
+                    policy.allowed_roots_canonical.len(),
+                    policy.commands_by_id.len(),
+                );
+
+                let result = serde_json::json!({
+                    "content": [{"type": "text", "text": doc}],
+                    "isError": false
+                });
+                self.auditor.log_success(ctx, SuccessDetails::default());
                 create_success_response(id, result)
             }
             _ => {
@@ -854,11 +1065,12 @@ impl Server {
 
         let contents = match read_params.uri.as_str() {
             "mdmcp://server/config" => {
+                let policy = { self.policy.read().unwrap().clone() };
                 let config_info = serde_json::json!({
                     "version": env!("CARGO_PKG_VERSION"),
-                    "policy_hash": &self.policy.policy_hash[..16],
-                    "allowed_roots": self.policy.allowed_roots_canonical.len(),
-                    "available_commands": self.policy.commands_by_id.len(),
+                    "policy_hash": &policy.policy_hash[..16],
+                    "allowed_roots": policy.allowed_roots_canonical.len(),
+                    "available_commands": policy.commands_by_id.len(),
                     "capabilities": ["tools", "prompts", "resources"]
                 });
 
@@ -894,15 +1106,16 @@ impl Server {
                 }]
             }
             "mdmcp://server/status" => {
+                let policy = { self.policy.read().unwrap().clone() };
                 let status_info = serde_json::json!({
                     "server": "mdmcpsrvr",
                     "version": env!("CARGO_PKG_VERSION"),
                     "protocol_version": "2024-11-05",
                     "status": "running",
                     "policy": {
-                        "hash": &self.policy.policy_hash[..16],
-                        "roots_count": self.policy.allowed_roots_canonical.len(),
-                        "commands_count": self.policy.commands_by_id.len()
+                        "hash": &policy.policy_hash[..16],
+                        "roots_count": policy.allowed_roots_canonical.len(),
+                        "commands_count": policy.commands_by_id.len()
                     }
                 });
 
@@ -950,10 +1163,11 @@ impl Server {
         }
 
         // Create audit context
+        let policy_hash = { self.policy.read().unwrap().policy_hash.clone() };
         let audit_ctx = AuditContext::new(
             req_id,
             request.method.clone(),
-            self.policy.policy_hash.clone(),
+            policy_hash,
         );
 
         // Dispatch to appropriate handler
@@ -1059,7 +1273,8 @@ impl Server {
         }
 
         // Open file with policy checks
-        let mut reader = match GuardedFileReader::open(&read_params.path, &self.policy) {
+        let policy = { self.policy.read().unwrap().clone() };
+        let mut reader = match GuardedFileReader::open(&read_params.path, &policy) {
             Ok(reader) => reader,
             Err(FsError::PathNotAllowed { path }) => {
                 self.auditor.log_denial(
@@ -1258,9 +1473,10 @@ impl Server {
         };
 
         // Create file writer with policy checks
+        let policy = { self.policy.read().unwrap().clone() };
         let writer = match GuardedFileWriter::create(
             &write_params.path,
-            &self.policy,
+            &policy,
             write_params.create,
             write_params.overwrite,
         ) {
@@ -1337,7 +1553,7 @@ impl Server {
         // Write data atomically
         match writer.write_atomic(&data) {
             Ok((bytes_written, hash)) => {
-                let result = FsWriteResult {
+        let result = FsWriteResult {
                     bytes_written,
                     sha256: hash.clone(),
                 };
@@ -1396,7 +1612,11 @@ impl Server {
         );
 
         // Validate command
-        let validated_cmd = match self.command_catalog.validate_command(&run_params) {
+        let validation_res = {
+            let catalog = self.command_catalog.read().unwrap();
+            catalog.validate_command(&run_params)
+        };
+        let validated_cmd = match validation_res {
             Ok(cmd) => cmd,
             Err(CatalogError::Policy(mdmcp_policy::PolicyError::CommandNotFound(cmd_id))) => {
                 self.auditor.log_denial(
@@ -1449,7 +1669,10 @@ impl Server {
         };
 
         // Execute command
-        match self.command_catalog.execute_command(validated_cmd).await {
+        // Execute without holding the catalog lock across await
+        let policy_for_exec = { self.policy.read().unwrap().clone() };
+        let temp_catalog = CommandCatalog::new(Arc::as_ref(&policy_for_exec).clone());
+        match temp_catalog.execute_command(validated_cmd).await {
             Ok(execution_result) => {
                 let result = CmdRunResult {
                     exit_code: execution_result.exit_code,
@@ -1505,6 +1728,33 @@ impl Server {
                 )
             }
         }
+    }
+}
+
+impl Server {
+    /// Reload the policy from the configured path, rebuilding catalogs.
+    async fn reload_policy(&self) -> Result<Arc<CompiledPolicy>> {
+        let path = self.config_path.clone();
+        let new_policy = tokio::task::spawn_blocking(move || {
+            mdmcp_policy::Policy::load(&path)?.compile()
+        })
+        .await
+        .context("Failed to reload policy")?
+        .context("Failed to compile reloaded policy")?;
+
+        let new_policy_arc = Arc::new(new_policy);
+
+        // Swap policy and rebuild command catalog
+        {
+            let mut policy_lock = self.policy.write().unwrap();
+            *policy_lock = new_policy_arc.clone();
+        }
+        {
+            let mut catalog_lock = self.command_catalog.write().unwrap();
+            *catalog_lock = CommandCatalog::new(Arc::as_ref(&new_policy_arc).clone());
+        }
+
+        Ok(new_policy_arc)
     }
 }
 
@@ -1572,7 +1822,9 @@ mod tests {
         };
 
         let compiled_policy = Arc::new(policy.compile().unwrap());
-        Server::new(compiled_policy).await.unwrap()
+        Server::new(compiled_policy, std::env::current_dir().unwrap().join("test_policy.yaml"))
+            .await
+            .unwrap()
     }
 
     #[tokio::test]
@@ -1580,7 +1832,8 @@ mod tests {
         let server = create_test_server().await;
 
         // Create a test file
-        let temp_file = NamedTempFile::new_in(&server.policy.allowed_roots_canonical[0]).unwrap();
+        let root0 = { server.policy.read().unwrap().allowed_roots_canonical[0].clone() };
+        let temp_file = NamedTempFile::new_in(&root0).unwrap();
         std::fs::write(temp_file.path(), "test content").unwrap();
 
         let params = FsReadParams {
@@ -1641,7 +1894,8 @@ mod tests {
     #[tokio::test]
     async fn test_fs_write_success() {
         let server = create_test_server().await;
-        let test_file = server.policy.allowed_roots_canonical[0].join("test_write.txt");
+        let root0 = { server.policy.read().unwrap().allowed_roots_canonical[0].clone() };
+        let test_file = root0.join("test_write.txt");
 
         let params = FsWriteParams {
             path: test_file.to_string_lossy().to_string(),
@@ -1709,3 +1963,7 @@ mod tests {
         assert_eq!(generate_request_id(&RpcId::Null), "null");
     }
 }
+
+
+
+

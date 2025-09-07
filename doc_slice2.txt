@@ -1,0 +1,77 @@
+r#"mdmcp Documentation\n\nServer: mdmcpsrvr v{} (build {})\nPolicy hash: {}… | roots: {} | commands: {}\n\nmdmcpcfg – Policy and Install CLI\n- Show policy: `mdmcpcfg policy show`\n- Edit policy: `mdmcpcfg policy edit` (opens your editor)\n- Validate policy: `mdmcpcfg policy validate`\n- Add allowed root: `mdmcpcfg policy add-root "<path>" --write`\n  • Adds to `allowed_roots` and (with --write) creates a write rule.\n- Add command: `mdmcpcfg policy add-command <id> --exec "<absolute_exec_path>"`\n  • Optional: `--allow <arg>` (repeatable), `--pattern <regex>` (repeatable).\n  • Defaults: `cwd_policy: within_root`, `allow_any_args: true`, sane timeouts.\n- Remove a rule or command: use `mdmcpcfg policy edit`, delete the YAML entry, then `mdmcpcfg policy validate`.\n\nInstalling and Updating mdmcpsrvr\n- Install latest release and configure Claude Desktop: `mdmcpcfg install`\n  • Optionally `--dest <dir>` to choose binary directory.\n  • `--local --local-path <path>` to install a locally built binary.\n- Update to latest: `mdmcpcfg update` (flags: `--channel stable|beta`, `--force`)\n  • Rollback is not yet implemented (`--rollback` will report unimplemented).\n- Uninstall: no dedicated command. To remove manually:\n  1) Stop clients using the server (e.g., close Claude Desktop).\n  2) Delete the server binary from the mdmcp bin dir.\n  3) Remove policy/config directory if desired.\n  4) Remove the mdmcp entry from Claude Desktop config (see below).\n\nClaude Desktop Integration\n- `mdmcpcfg install` adds an entry to Claude Desktop’s config pointing at mdmcpsrvr with `--config <policy> --stdio`.\n- Config paths (typical):\n  • Windows: `%APPDATA%/Claude/claude_desktop_config.json`\n  • macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`\n  • Linux: `~/.config/Claude/claude_desktop_config.json`\n\nUsing the MCP Tools\n- File I/O: `read_file`, `write_file` operate within allowed roots.\n- Commands: `run_command` executes catalog entries from the policy.\n- Discoverability:\n  • `list_accessible_directories` — shows allowed roots.\n  • `list_available_commands` — shows command catalog details.\n- Management:\n  • `server_info` — version, build, policy summary, policy format.\n  • `reload_policy` — reloads the policy file without restart.\n\nPolicy Authoring Tips\n- Start from defaults (`mdmcpcfg install` creates a sensible policy).\n- Keep `deny_network_fs: true` unless you explicitly need network mounts.\n- Restrict `allowed_roots` to the folders you actually use.\n- Prefer fixed/allow args for commands; use regex patterns carefully.\n- Never put secrets into logs.\n\nExamples\n- Add a dev workspace and allow writes:\n  `mdmcpcfg policy add-root "<your_dev_dir>" --write`\n- Add Cargo (Windows):\n  `mdmcpcfg policy add-command cargo --exec C:/Users/<you>/.cargo/bin/cargo.exe`\n- Add Git (Windows):\n  `mdmcpcfg policy add-command git --exec C:/Program Files/Git/bin/git.exe`\n- Build a project from Claude:\n  Use `cmd.run` with `commandId: "cargo"`, `args: ["build"]`, and set `cwd` to your project folder.\n\nNotes\n- The server runs commands directly (no implicit shell). Use `cmd.exe /c` or `/bin/sh -c` in a policy command if you need shell features.\n- On Windows/MSVC, the server bootstraps VS variables automatically (vcvars) for cargo/rustc so linking works like your normal shell.\n,,",
+                    version,
+                    build_str,
+                    &policy.policy_hash[..16],
+                    policy.allowed_roots_canonical.len(),
+                    policy.commands_by_id.len(),
+                );
+
+                let result = serde_json::json!({
+                    "content": [{"type": "text", "text": doc}],
+                    "isError": false
+                });
+                self.auditor.log_success(ctx, SuccessDetails::default());
+                create_success_response(id, result)
+            }
+            _ => {
+                self.auditor
+                    .log_error(ctx, &format!("Unknown tool: {}", tool_name), None);
+                create_error_response(
+                    id,
+                    McpErrorCode::InvalidArgs,
+                    Some(format!("Unknown tool: {}", tool_name)),
+                    None,
+                )
+            }
+        }
+    }
+
+    /// Handle prompts/list request
+    async fn handle_prompts_list(
+        &self,
+        ctx: &AuditContext,
+        id: RpcId,
+        params: Value,
+    ) -> RpcResponse {
+        let _list_params: PromptsListParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                self.auditor.log_error(
+                    ctx,
+                    &format!("Invalid prompts/list parameters: {}", e),
+                    None,
+                );
+                return create_error_response(
+                    id,
+                    McpErrorCode::InvalidArgs,
+                    Some(format!("Invalid parameters: {}", e)),
+                    None,
+                );
+            }
+        };
+
+        debug!("Handling prompts/list request");
+
+        // Define available prompts that help users interact with this server
+        let prompts = vec![
+            PromptInfo {
+                name: "file_operation".to_string(),
+                title: "File Operation Helper".to_string(),
+                description: Some(
+                    "Generate prompts for file read/write operations within allowed directories"
+                        .to_string(),
+                ),
+                arguments: vec![
+                    PromptArgument {
+                        name: "operation".to_string(),
+                        description: Some("The operation type: 'read' or 'write'".to_string()),
+                        required: true,
+                    },
+                    PromptArgument {
+                        name: "path".to_string(),
+                        description: Some("The file path to operate on".to_string()),
+                        required: true,
+                    },
+                ],
+            },
+           
