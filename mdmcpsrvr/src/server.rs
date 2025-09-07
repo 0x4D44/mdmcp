@@ -1673,7 +1673,7 @@ mod tests {
     async fn test_cmd_run_success() {
         let server = create_test_server().await;
 
-        let mut params = CmdRunParams {
+        let params = CmdRunParams {
             command_id: "echo".to_string(),
             args: vec!["test".to_string()],
             cwd: None,
