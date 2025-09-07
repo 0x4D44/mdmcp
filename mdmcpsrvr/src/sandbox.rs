@@ -243,11 +243,14 @@ fn is_rust_tool(exe: &Path) -> bool {
 }
 
 #[cfg(windows)]
-fn try_bootstrap_msvc_env(env: &mut HashMap<String, String>) -> Result<(), Box<dyn std::error::Error>> {
+fn try_bootstrap_msvc_env(
+    env: &mut HashMap<String, String>,
+) -> Result<(), Box<dyn std::error::Error>> {
     use std::process::Command as StdCommand;
 
     // Locate vswhere
-    let pf86 = std::env::var("ProgramFiles(x86)").or_else(|_| std::env::var("PROGRAMFILES(X86)"))?;
+    let pf86 =
+        std::env::var("ProgramFiles(x86)").or_else(|_| std::env::var("PROGRAMFILES(X86)"))?;
     let vswhere_path = Path::new(&pf86)
         .join("Microsoft Visual Studio")
         .join("Installer")
@@ -259,24 +262,33 @@ fn try_bootstrap_msvc_env(env: &mut HashMap<String, String>) -> Result<(), Box<d
 
     let output = StdCommand::new(vswhere_path)
         .arg("-latest")
-        .arg("-products").arg("*")
-        .arg("-requires").arg("Microsoft.VisualStudio.Component.VC.Tools.x86.x64")
-        .arg("-format").arg("json")
+        .arg("-products")
+        .arg("*")
+        .arg("-requires")
+        .arg("Microsoft.VisualStudio.Component.VC.Tools.x86.x64")
+        .arg("-format")
+        .arg("json")
         .output()?;
     if !output.status.success() {
         return Ok(());
     }
     let json = String::from_utf8_lossy(&output.stdout);
     let val: serde_json::Value = serde_json::from_str(&json).unwrap_or(serde_json::Value::Null);
-    let install_path = val.as_array()
+    let install_path = val
+        .as_array()
         .and_then(|arr| arr.first())
         .and_then(|o| o.get("installationPath"))
         .and_then(|s| s.as_str());
-    let Some(install_path) = install_path else { return Ok(()); };
+    let Some(install_path) = install_path else {
+        return Ok(());
+    };
 
     // Build vcvars64.bat path
     let vcvars = Path::new(install_path)
-        .join("VC").join("Auxiliary").join("Build").join("vcvars64.bat");
+        .join("VC")
+        .join("Auxiliary")
+        .join("Build")
+        .join("vcvars64.bat");
     if !vcvars.exists() {
         return Ok(());
     }
@@ -497,7 +509,14 @@ pub fn filter_environment(
     }
     #[cfg(unix)]
     {
-        for key in ["HOME", "USER", "SHELL", "TMPDIR", "CARGO_HOME", "RUSTUP_HOME"] {
+        for key in [
+            "HOME",
+            "USER",
+            "SHELL",
+            "TMPDIR",
+            "CARGO_HOME",
+            "RUSTUP_HOME",
+        ] {
             if let Ok(val) = std::env::var(key) {
                 filtered.insert(key.to_string(), val);
             }
