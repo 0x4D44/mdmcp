@@ -6,10 +6,10 @@
 //! access to potentially dangerous network-mounted filesystems.
 
 use anyhow::{Context, Result};
+use cap_std::ambient_authority;
+use cap_std::fs::{Dir, File, OpenOptions};
 use mdmcp_policy::CompiledPolicy;
 use sha2::{Digest, Sha256};
-use cap_std::fs::{Dir, File, OpenOptions};
-use cap_std::ambient_authority;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -73,11 +73,9 @@ impl GuardedFileReader {
         }
 
         // Open via capability handle bound to the file's parent directory
-        let parent = canonical
-            .parent()
-            .ok_or_else(|| FsError::PathNotAllowed {
-                path: canonical.display().to_string(),
-            })?;
+        let parent = canonical.parent().ok_or_else(|| FsError::PathNotAllowed {
+            path: canonical.display().to_string(),
+        })?;
         let file_name = canonical
             .file_name()
             .ok_or_else(|| FsError::PathNotAllowed {
@@ -153,9 +151,9 @@ impl GuardedFileWriter {
             .iter()
             .find(|rule| {
                 if rule.recursive {
-                    parent.starts_with(&rule.path_canonical)
+                    parent.starts_with(rule.path_canonical.as_path())
                 } else {
-                    parent == &rule.path_canonical
+                    parent == rule.path_canonical.as_path()
                 }
             })
             .ok_or_else(|| FsError::WriteNotPermitted {
@@ -198,9 +196,7 @@ impl GuardedFileWriter {
             .ok_or_else(|| FsError::PathNotAllowed {
                 path: canonical.display().to_string(),
             })?;
-        let stem = file_name
-            .to_str()
-            .unwrap_or("tmp");
+        let stem = file_name.to_str().unwrap_or("tmp");
         let temp_name = PathBuf::from(format!("{}.tmp.{}", stem, std::process::id()));
 
         let dir = Dir::open_ambient_dir(parent, ambient_authority()).map_err(FsError::Io)?;
@@ -227,7 +223,10 @@ impl GuardedFileWriter {
         {
             let mut opts = OpenOptions::new();
             opts.create(true).write(true).truncate(true);
-            let mut temp_file = self.dir.open_with(&self.temp_name, &opts).map_err(FsError::Io)?;
+            let mut temp_file = self
+                .dir
+                .open_with(&self.temp_name, &opts)
+                .map_err(FsError::Io)?;
             use std::io::Write as _;
             temp_file.write_all(data)?;
             temp_file.sync_all()?;
@@ -278,8 +277,8 @@ fn canonicalize_path(path: &Path) -> Result<PathBuf> {
     } else {
         // Path might not exist, try to canonicalize the parent
         if let Some(parent) = path.parent() {
-            let parent_canonical = dunce::canonicalize(parent)
-                .context("Parent directory does not exist")?;
+            let parent_canonical =
+                dunce::canonicalize(parent).context("Parent directory does not exist")?;
             let filename = path
                 .file_name()
                 .context("Invalid path: no filename component")?;

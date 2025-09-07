@@ -63,19 +63,28 @@ async fn main() -> Result<()> {
     // Load and compile policy
     let config_path = cli.config.context("Configuration file path is required")?;
     let policy = load_policy(&config_path).await?;
-    
+
     // Log policy summary with detailed allowed directories and commands
     info!("Loaded policy hash: {}", &policy.policy_hash[..16]);
-    
-    info!("Allowed directories ({} total):", policy.allowed_roots_canonical.len());
+
+    info!(
+        "Allowed directories ({} total):",
+        policy.allowed_roots_canonical.len()
+    );
     for (i, root) in policy.allowed_roots_canonical.iter().enumerate().take(10) {
         info!("  {} - {}", i + 1, root.display());
     }
     if policy.allowed_roots_canonical.len() > 10 {
-        info!("  ... and {} more directories", policy.allowed_roots_canonical.len() - 10);
+        info!(
+            "  ... and {} more directories",
+            policy.allowed_roots_canonical.len() - 10
+        );
     }
-    
-    info!("Available commands ({} total):", policy.commands_by_id.len());
+
+    info!(
+        "Available commands ({} total):",
+        policy.commands_by_id.len()
+    );
     for (i, (cmd_id, cmd_rule)) in policy.commands_by_id.iter().enumerate().take(10) {
         info!("  {} - '{}' -> {}", i + 1, cmd_id, cmd_rule.rule.exec);
         if !cmd_rule.rule.args.allow.is_empty() {
@@ -83,7 +92,10 @@ async fn main() -> Result<()> {
         }
     }
     if policy.commands_by_id.len() > 10 {
-        info!("  ... and {} more commands", policy.commands_by_id.len() - 10);
+        info!(
+            "  ... and {} more commands",
+            policy.commands_by_id.len() - 10
+        );
     }
 
     // Create server instance
@@ -117,10 +129,10 @@ async fn run_stdio_server(server: server::Server) -> Result<()> {
     loop {
         line.clear();
         debug!("Waiting for next line from stdin...");
-        
+
         // Add a small delay to let any pending output flush
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        
+
         match reader.read_line(&mut line).await {
             Ok(0) => {
                 info!("Client disconnected - shutting down gracefully");
@@ -129,7 +141,7 @@ async fn run_stdio_server(server: server::Server) -> Result<()> {
             Ok(_) => {
                 let line = line.trim();
                 debug!("Processing request: {}", line);
-                
+
                 if line.is_empty() {
                     debug!("Received empty line, continuing...");
                     continue;
@@ -179,18 +191,18 @@ where
         mut writer: tracing_subscriber::fmt::format::Writer<'_>,
         event: &tracing::Event<'_>,
     ) -> std::fmt::Result {
-        use std::process;
         use chrono::Utc;
-        
+        use std::process;
+
         let timestamp = Utc::now().format("%Y-%m-%d:%H:%M:%S%.3f");
         let pid = process::id();
         let _level = event.metadata().level();
-        
+
         write!(writer, "{}-MDMCPsrvr-{}: ", timestamp, pid)?;
-        
+
         // Format the message
         ctx.field_format().format_fields(writer.by_ref(), event)?;
-        
+
         writeln!(writer)
     }
 }

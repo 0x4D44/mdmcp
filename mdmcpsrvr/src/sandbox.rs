@@ -224,61 +224,63 @@ async fn wait_for_completion(
 #[cfg(unix)]
 fn apply_security_constraints(cmd: &mut Command) -> Result<(), SandboxError> {
     // Apply resource limits
-    unsafe { cmd.pre_exec(|| {
-        // Set CPU time limit (5 minutes)
-        let cpu_limit = libc::rlimit {
-            rlim_cur: 300, // 5 minutes
-            rlim_max: 300,
-        };
+    unsafe {
+        cmd.pre_exec(|| {
+            // Set CPU time limit (5 minutes)
+            let cpu_limit = libc::rlimit {
+                rlim_cur: 300, // 5 minutes
+                rlim_max: 300,
+            };
 
-        if libc::setrlimit(libc::RLIMIT_CPU, &cpu_limit) != 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "Failed to set CPU limit",
-            ));
-        }
+            if libc::setrlimit(libc::RLIMIT_CPU, &cpu_limit) != 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "Failed to set CPU limit",
+                ));
+            }
 
-        // Set memory limit (1GB virtual memory)
-        let mem_limit = libc::rlimit {
-            rlim_cur: 1024 * 1024 * 1024, // 1GB
-            rlim_max: 1024 * 1024 * 1024,
-        };
+            // Set memory limit (1GB virtual memory)
+            let mem_limit = libc::rlimit {
+                rlim_cur: 1024 * 1024 * 1024, // 1GB
+                rlim_max: 1024 * 1024 * 1024,
+            };
 
-        if libc::setrlimit(libc::RLIMIT_AS, &mem_limit) != 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "Failed to set memory limit",
-            ));
-        }
+            if libc::setrlimit(libc::RLIMIT_AS, &mem_limit) != 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "Failed to set memory limit",
+                ));
+            }
 
-        // Limit number of processes
-        let proc_limit = libc::rlimit {
-            rlim_cur: 32, // Maximum 32 processes
-            rlim_max: 32,
-        };
+            // Limit number of processes
+            let proc_limit = libc::rlimit {
+                rlim_cur: 32, // Maximum 32 processes
+                rlim_max: 32,
+            };
 
-        if libc::setrlimit(libc::RLIMIT_NPROC, &proc_limit) != 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "Failed to set process limit",
-            ));
-        }
+            if libc::setrlimit(libc::RLIMIT_NPROC, &proc_limit) != 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "Failed to set process limit",
+                ));
+            }
 
-        // Limit file descriptors
-        let fd_limit = libc::rlimit {
-            rlim_cur: 64, // Maximum 64 file descriptors
-            rlim_max: 64,
-        };
+            // Limit file descriptors
+            let fd_limit = libc::rlimit {
+                rlim_cur: 64, // Maximum 64 file descriptors
+                rlim_max: 64,
+            };
 
-        if libc::setrlimit(libc::RLIMIT_NOFILE, &fd_limit) != 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "Failed to set file descriptor limit",
-            ));
-        }
+            if libc::setrlimit(libc::RLIMIT_NOFILE, &fd_limit) != 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "Failed to set file descriptor limit",
+                ));
+            }
 
-        Ok(())
-    }); }
+            Ok(())
+        });
+    }
 
     Ok(())
 }
@@ -325,13 +327,14 @@ pub fn validate_cwd(
         }
         mdmcp_policy::CwdPolicy::WithinRoot => {
             if let Some(cwd) = requested_cwd {
-                let canonical_cwd = cwd.canonicalize().map_err(|e| {
+                let canonical_cwd = dunce::canonicalize(cwd).map_err(|e| {
                     SandboxError::ExecutionFailed(format!("Invalid working directory: {}", e))
                 })?;
 
-                // Check if CWD is within any allowed root
+                // Normalize allowed roots for robust comparison on Windows (strip \\?\ prefix)
                 for root in allowed_roots {
-                    if canonical_cwd.starts_with(root) {
+                    let root_norm = dunce::canonicalize(root).unwrap_or_else(|_| root.clone());
+                    if canonical_cwd.starts_with(&root_norm) {
                         return Ok(Some(canonical_cwd));
                     }
                 }

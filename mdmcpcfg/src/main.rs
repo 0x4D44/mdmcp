@@ -115,7 +115,11 @@ async fn main() -> Result<()> {
             local,
             local_path,
         } => install::run(dest, !no_claude_config, local, local_path).await,
-        Commands::Update { channel, rollback, force } => install::update(channel, rollback, force).await,
+        Commands::Update {
+            channel,
+            rollback,
+            force,
+        } => install::update(channel, rollback, force).await,
         Commands::Policy(policy_cmd) => match policy_cmd {
             PolicyCommands::Show => policy::show().await,
             PolicyCommands::Edit => policy::edit().await,

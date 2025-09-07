@@ -118,8 +118,14 @@ pub async fn run(
 
                 // Check for local binary
                 if let Some(local_binary) = detect_local_server_binary() {
-                    let version = test_local_binary_version(&local_binary).await.unwrap_or_else(|_| "unknown".to_string());
-                    println!("🔍 Found local server binary: {} (version {})", local_binary.display(), version);
+                    let version = test_local_binary_version(&local_binary)
+                        .await
+                        .unwrap_or_else(|_| "unknown".to_string());
+                    println!(
+                        "🔍 Found local server binary: {} (version {})",
+                        local_binary.display(),
+                        version
+                    );
                     println!("❓ Would you like to install from local binary instead?");
 
                     // Simple stdin prompt
@@ -177,8 +183,14 @@ pub async fn update(channel: String, rollback: bool, force: bool) -> Result<()> 
 
             // Check for local binary
             if let Some(local_binary) = detect_local_server_binary() {
-                let version = test_local_binary_version(&local_binary).await.unwrap_or_else(|_| "unknown".to_string());
-                println!("🔍 Found local server binary: {} (version {})", local_binary.display(), version);
+                let version = test_local_binary_version(&local_binary)
+                    .await
+                    .unwrap_or_else(|_| "unknown".to_string());
+                println!(
+                    "🔍 Found local server binary: {} (version {})",
+                    local_binary.display(),
+                    version
+                );
                 println!("❓ Would you like to update from local binary instead?");
 
                 // Simple stdin prompt
@@ -212,7 +224,10 @@ async fn update_from_github(channel: String, paths: &Paths, force: bool) -> Resu
         }
 
         if force {
-            println!("⚠️  Force updating to version {} (reinstall)", release.tag_name);
+            println!(
+                "⚠️  Force updating to version {} (reinstall)",
+                release.tag_name
+            );
         } else {
             // Ask for confirmation
             println!("❓ Update to version {}?", release.tag_name);

@@ -298,9 +298,9 @@ pub enum PromptContent {
     #[serde(rename = "text")]
     Text { text: String },
     #[serde(rename = "image")]
-    Image { 
+    Image {
         #[serde(rename = "imageUrl")]
-        image_url: String 
+        image_url: String,
     },
 }
 
@@ -347,13 +347,13 @@ pub struct ResourcesReadResult {
 #[serde(tag = "type")]
 pub enum ResourceContent {
     #[serde(rename = "text")]
-    Text { 
+    Text {
         text: String,
         #[serde(skip_serializing_if = "Option::is_none", rename = "mimeType")]
         mime_type: Option<String>,
     },
     #[serde(rename = "blob")]
-    Blob { 
+    Blob {
         blob: String, // base64 encoded
         #[serde(skip_serializing_if = "Option::is_none", rename = "mimeType")]
         mime_type: Option<String>,

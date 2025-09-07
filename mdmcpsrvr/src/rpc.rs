@@ -63,21 +63,26 @@ pub fn parse_message(line: &str) -> Result<RpcMessage> {
 pub fn parse_request(line: &str) -> Result<RpcRequest> {
     match parse_message(line)? {
         RpcMessage::Request(req) => Ok(req),
-        RpcMessage::Notification { method, .. } => {
-            Err(anyhow::anyhow!("Expected request but got notification: {}", method))
-        }
+        RpcMessage::Notification { method, .. } => Err(anyhow::anyhow!(
+            "Expected request but got notification: {}",
+            method
+        )),
     }
 }
 
 /// Send a JSON-RPC response to stdout
 pub async fn send_response(response: &RpcResponse) -> Result<()> {
     let json = serde_json::to_string(response).context("Failed to serialize response")?;
-    
+
     // Log the response being sent (with emoji for visibility in logs)
     if response.error.is_some() {
         tracing::info!("❌ Sending error response (id={:?}): {}", response.id, json);
     } else {
-        tracing::info!("✅ Sending success response (id={:?}): {}", response.id, json);
+        tracing::info!(
+            "✅ Sending success response (id={:?}): {}",
+            response.id,
+            json
+        );
     }
 
     send_json_line(&json).await
@@ -87,19 +92,19 @@ pub async fn send_response(response: &RpcResponse) -> Result<()> {
 async fn send_json_line(json: &str) -> Result<()> {
     debug!("Preparing to send JSON: {}", json);
     let mut stdout = io::stdout();
-    
+
     debug!("Writing JSON to stdout...");
     stdout
         .write_all(json.as_bytes())
         .await
         .context("Failed to write to stdout")?;
-    
+
     debug!("Writing newline to stdout...");
     stdout
         .write_all(b"\n")
         .await
         .context("Failed to write newline to stdout")?;
-    
+
     debug!("Flushing stdout...");
     stdout.flush().await.context("Failed to flush stdout")?;
 
@@ -141,8 +146,7 @@ pub fn create_error_response(
 /// Validate method name against MCP specification
 pub fn validate_method(method: &str) -> Result<(), McpErrorCode> {
     match method {
-        "initialize" | "tools/list" | "tools/call" 
-        | "prompts/list" | "prompts/get"
+        "initialize" | "tools/list" | "tools/call" | "prompts/list" | "prompts/get"
         | "resources/list" | "resources/read" => Ok(()),
         _ => {
             warn!("Unsupported method: {}", method);

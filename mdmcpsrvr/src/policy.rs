@@ -267,17 +267,17 @@ mod tests {
             r#"version: 1
 deny_network_fs: true
 allowed_roots:
-  - "{}"
+  - '{}'
 write_rules:
-  - path: "{}"
+  - path: '{}'
     recursive: true
     max_file_bytes: 1000000
 commands:
-  - id: "echo"
-    exec: "/bin/echo"
+  - id: 'echo'
+    exec: '/bin/echo'
     args:
-      allow: ["hello"]
-    platform: ["linux"]
+      allow: ['hello']
+    platform: ['linux']
 "#,
             root_path.display(),
             out_path.display()
@@ -380,7 +380,7 @@ commands:
     #[test]
     fn test_path_expansion() {
         // Test tilde expansion (if HOME is set)
-        if let Some(_) = dirs::home_dir() {
+        if dirs::home_dir().is_some() {
             let expanded = expand_policy_path("~/test").unwrap();
             assert!(!expanded.starts_with('~'));
             assert!(expanded.ends_with("test"));

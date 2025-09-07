@@ -326,10 +326,8 @@ impl CompiledPolicy {
             let mut allowed = false;
 
             // 1) If the argument looks like an absolute path and is within allowed roots, allow it
-            if is_absolute_path_like(arg) {
-                if is_within_allowed_roots_str(self, arg) {
-                    allowed = true;
-                }
+            if is_absolute_path_like(arg) && is_within_allowed_roots_str(self, arg) {
+                allowed = true;
             }
 
             // Check against allow list
@@ -431,7 +429,8 @@ fn default_allow_any_args() -> bool {
 
 fn is_absolute_path_like(s: &str) -> bool {
     if cfg!(windows) {
-        if s.starts_with("\\\\") { // UNC path
+        if s.starts_with("\\\\") {
+            // UNC path
             return true;
         }
         let bytes = s.as_bytes();
