@@ -233,10 +233,7 @@ fn apply_security_constraints(cmd: &mut Command) -> Result<(), SandboxError> {
             };
 
             if libc::setrlimit(libc::RLIMIT_CPU, &cpu_limit) != 0 {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "Failed to set CPU limit",
-                ));
+                return Err(std::io::Error::other("Failed to set CPU limit"));
             }
 
             // Set memory limit (1GB virtual memory)
@@ -246,10 +243,7 @@ fn apply_security_constraints(cmd: &mut Command) -> Result<(), SandboxError> {
             };
 
             if libc::setrlimit(libc::RLIMIT_AS, &mem_limit) != 0 {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "Failed to set memory limit",
-                ));
+                return Err(std::io::Error::other("Failed to set memory limit"));
             }
 
             // Limit number of processes
@@ -259,10 +253,7 @@ fn apply_security_constraints(cmd: &mut Command) -> Result<(), SandboxError> {
             };
 
             if libc::setrlimit(libc::RLIMIT_NPROC, &proc_limit) != 0 {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "Failed to set process limit",
-                ));
+                return Err(std::io::Error::other("Failed to set process limit"));
             }
 
             // Limit file descriptors
@@ -272,10 +263,7 @@ fn apply_security_constraints(cmd: &mut Command) -> Result<(), SandboxError> {
             };
 
             if libc::setrlimit(libc::RLIMIT_NOFILE, &fd_limit) != 0 {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "Failed to set file descriptor limit",
-                ));
+                return Err(std::io::Error::other("Failed to set file descriptor limit"));
             }
 
             Ok(())
