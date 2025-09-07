@@ -74,7 +74,10 @@ pub async fn execute_command(config: ExecutionConfig) -> Result<ExecutionResult,
     }
 
     // Prepare environment: start from filtered env, then optionally bootstrap MSVC if needed
+    #[cfg(windows)]
     let mut final_env = config.env.clone();
+    #[cfg(not(windows))]
+    let final_env = config.env.clone();
 
     #[cfg(windows)]
     {

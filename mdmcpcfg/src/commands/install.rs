@@ -856,11 +856,20 @@ fn calculate_sha256<P: AsRef<Path>>(path: P) -> Result<String> {
 
 /// Create the default policy file content
 fn create_default_policy_content() -> Result<String> {
-    use mdmcp_policy::{ArgsPolicy, CommandRule, CwdPolicy, LimitsConfig, LoggingConfig, Policy, WriteRule};
+    use mdmcp_policy::{
+        ArgsPolicy, CommandRule, CwdPolicy, LimitsConfig, LoggingConfig, Policy, WriteRule,
+    };
     let home_dir = dirs::home_dir().context("Failed to get home directory")?;
     let home_path = home_dir.to_string_lossy().replace('\\', "/");
-    let workspace_path = home_dir.join("mdmcp-workspace").to_string_lossy().replace('\\', "/");
-    let users_path = if cfg!(target_os = "windows") { "C:/Users" } else { "/tmp" };
+    let workspace_path = home_dir
+        .join("mdmcp-workspace")
+        .to_string_lossy()
+        .replace('\\', "/");
+    let users_path = if cfg!(target_os = "windows") {
+        "C:/Users"
+    } else {
+        "/tmp"
+    };
 
     let mut commands: Vec<CommandRule> = Vec::new();
 
@@ -869,7 +878,17 @@ fn create_default_policy_content() -> Result<String> {
         commands.push(CommandRule {
             id: "ls".into(),
             exec: "/bin/ls".into(),
-            args: ArgsPolicy { allow: vec!["-l".into(), "-la".into(), "-a".into(), "-h".into(), "--color=never".into()], fixed: vec![], patterns: vec![] },
+            args: ArgsPolicy {
+                allow: vec![
+                    "-l".into(),
+                    "-la".into(),
+                    "-a".into(),
+                    "-h".into(),
+                    "--color=never".into(),
+                ],
+                fixed: vec![],
+                patterns: vec![],
+            },
             cwd_policy: CwdPolicy::WithinRoot,
             env_allowlist: vec![],
             timeout_ms: 5000,
@@ -880,7 +899,11 @@ fn create_default_policy_content() -> Result<String> {
         commands.push(CommandRule {
             id: "cat".into(),
             exec: "/bin/cat".into(),
-            args: ArgsPolicy { allow: vec![], fixed: vec![], patterns: vec![] },
+            args: ArgsPolicy {
+                allow: vec![],
+                fixed: vec![],
+                patterns: vec![],
+            },
             cwd_policy: CwdPolicy::WithinRoot,
             env_allowlist: vec![],
             timeout_ms: 10_000,
@@ -895,7 +918,11 @@ fn create_default_policy_content() -> Result<String> {
         let windows_cmd = |id: &str, sub: &str| CommandRule {
             id: id.into(),
             exec: "C:/Windows/System32/cmd.exe".into(),
-            args: ArgsPolicy { allow: vec![], fixed: vec!["/c".into(), sub.into()], patterns: vec![] },
+            args: ArgsPolicy {
+                allow: vec![],
+                fixed: vec!["/c".into(), sub.into()],
+                patterns: vec![],
+            },
             cwd_policy: CwdPolicy::WithinRoot,
             env_allowlist: vec![],
             timeout_ms: 10_000,
@@ -904,14 +931,25 @@ fn create_default_policy_content() -> Result<String> {
             allow_any_args: true,
         };
         for (id, sub) in [
-            ("dir","dir"),("type","type"),("copy","copy"),("move","move"),
-            ("del","del"),("mkdir","mkdir"),("rmdir","rmdir")
-        ] { commands.push(windows_cmd(id, sub)); }
+            ("dir", "dir"),
+            ("type", "type"),
+            ("copy", "copy"),
+            ("move", "move"),
+            ("del", "del"),
+            ("mkdir", "mkdir"),
+            ("rmdir", "rmdir"),
+        ] {
+            commands.push(windows_cmd(id, sub));
+        }
 
         let win_exec = |id: &str, path: &str, timeout: u64, max_bytes: u64| CommandRule {
             id: id.into(),
             exec: path.into(),
-            args: ArgsPolicy { allow: vec![], fixed: vec![], patterns: vec![] },
+            args: ArgsPolicy {
+                allow: vec![],
+                fixed: vec![],
+                patterns: vec![],
+            },
             cwd_policy: CwdPolicy::WithinRoot,
             env_allowlist: vec![],
             timeout_ms: timeout,
@@ -919,20 +957,60 @@ fn create_default_policy_content() -> Result<String> {
             platform: vec!["windows".into()],
             allow_any_args: true,
         };
-        commands.push(win_exec("findstr", "C:/Windows/System32/findstr.exe", 10_000, 4_000_000));
-        commands.push(win_exec("where",   "C:/Windows/System32/where.exe",   10_000, 2_000_000));
-        commands.push(win_exec("tree",    "C:/Windows/System32/tree.com",    10_000, 4_000_000));
-        commands.push(win_exec("tasklist","C:/Windows/System32/tasklist.exe",10_000, 4_000_000));
-        commands.push(win_exec("taskkill","C:/Windows/System32/taskkill.exe",10_000, 2_000_000));
-        commands.push(win_exec("systeminfo","C:/Windows/System32/systeminfo.exe",15_000, 4_000_000));
-        commands.push(win_exec("netstat","C:/Windows/System32/netstat.exe",  15_000, 4_000_000));
+        commands.push(win_exec(
+            "findstr",
+            "C:/Windows/System32/findstr.exe",
+            10_000,
+            4_000_000,
+        ));
+        commands.push(win_exec(
+            "where",
+            "C:/Windows/System32/where.exe",
+            10_000,
+            2_000_000,
+        ));
+        commands.push(win_exec(
+            "tree",
+            "C:/Windows/System32/tree.com",
+            10_000,
+            4_000_000,
+        ));
+        commands.push(win_exec(
+            "tasklist",
+            "C:/Windows/System32/tasklist.exe",
+            10_000,
+            4_000_000,
+        ));
+        commands.push(win_exec(
+            "taskkill",
+            "C:/Windows/System32/taskkill.exe",
+            10_000,
+            2_000_000,
+        ));
+        commands.push(win_exec(
+            "systeminfo",
+            "C:/Windows/System32/systeminfo.exe",
+            15_000,
+            4_000_000,
+        ));
+        commands.push(win_exec(
+            "netstat",
+            "C:/Windows/System32/netstat.exe",
+            15_000,
+            4_000_000,
+        ));
     }
 
     let policy = Policy {
         version: 1,
         deny_network_fs: true,
         allowed_roots: vec![home_path, users_path.into()],
-        write_rules: vec![WriteRule { path: workspace_path, recursive: true, max_file_bytes: 10_000_000, create_if_missing: true }],
+        write_rules: vec![WriteRule {
+            path: workspace_path,
+            recursive: true,
+            max_file_bytes: 10_000_000,
+            create_if_missing: true,
+        }],
         commands,
         logging: LoggingConfig::default(),
         limits: LimitsConfig::default(),
