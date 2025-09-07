@@ -388,7 +388,7 @@ fn is_network_fs(path: &Path) -> Result<bool, FsError> {
 
 #[cfg(target_os = "macos")]
 fn is_network_fs(path: &Path) -> Result<bool, FsError> {
-    use std::ffi::CString;
+    use std::ffi::{CStr, CString};
     use std::mem;
     use std::os::unix::ffi::OsStrExt;
 
