@@ -107,42 +107,45 @@ pub async fn run(
 ) -> Result<()> {
     println!("🛠️ Installing mdmcp MCP server...");
 
+    // If explicitly requested local, keep previous behavior
     if local {
-        // Explicit local install
-        install_from_local(dest_dir, configure_claude, local_path).await
+        return install_from_local(dest_dir, configure_claude, local_path).await;
+    }
+
+    // Probe available sources
+    let github = fetch_latest_release().await.ok();
+    let local_detected = detect_local_server_binary();
+    let local_info = if let Some(ref bin) = local_detected {
+        Some((bin.clone(), test_local_binary_version(bin).await.unwrap_or_else(|_| "unknown".into())))
     } else {
-        // Try GitHub first, fallback to local if available
-        match install_from_github(dest_dir.clone(), configure_claude).await {
-            Ok(()) => Ok(()),
-            Err(github_error) => {
-                // Log GitHub failure details
-                log_github_failure(&github_error);
+        None
+    };
 
-                // Check for local binary
-                if let Some(local_binary) = detect_local_server_binary() {
-                    let version = test_local_binary_version(&local_binary)
-                        .await
-                        .unwrap_or_else(|_| "unknown".to_string());
-                    println!(
-                        "🔎 Found local server binary: {} (version {})",
-                        local_binary.display(),
-                        version
-                    );
-                    println!("❓ Would you like to install from local binary instead?");
+    // Report availability clearly
+    println!("Available installation sources:");
+    if let Some(ref rel) = github {
+        println!(" - GitHub release: {}", rel.tag_name);
+    }
+    if let Some((ref bin, ref ver)) = local_info {
+        println!(" - Local binary: {} (version {})", bin.display(), ver);
+    }
 
-                    // Simple stdin prompt
-                    if prompt_user_confirmation()? {
-                        return install_from_local_binary(
-                            dest_dir,
-                            configure_claude,
-                            &local_binary,
-                        )
-                        .await;
-                    }
-                }
+    if github.is_none() && local_info.is_none() {
+        bail!("No installation sources available (GitHub release not reachable and no local binary detected)");
+    }
 
-                Err(github_error)
-            }
+    // Prompt for choice (G/L/N) based on availability
+    let choice = prompt_source_choice(github.is_some(), local_info.is_some())?;
+
+    match choice {
+        Some('G') => install_from_github(dest_dir, configure_claude).await,
+        Some('L') => {
+            let (bin, _) = local_info.expect("local info should exist");
+            install_from_local_binary(dest_dir, configure_claude, &bin).await
+        }
+        _ => {
+            println!("✖ Installation cancelled by user.");
+            Ok(())
         }
     }
 }
@@ -161,7 +164,7 @@ pub async fn update(channel: String, rollback: bool, force: bool) -> Result<()> 
 
     // Check current version
     if let Some(current_info) = InstallationInfo::load(&paths)? {
-        println!("ℹ️ Current version: {}", current_info.version);
+        println!("ℹ️ Current installed version: {}", current_info.version);
 
         // Verify current binary integrity
         let binary_path = Path::new(&current_info.binary_path);
@@ -176,32 +179,41 @@ pub async fn update(channel: String, rollback: bool, force: bool) -> Result<()> 
         return run(None, true, false, None).await;
     }
 
-    // Try GitHub update first, fallback to local if available
-    match update_from_github(channel, &paths, force).await {
-        Ok(()) => Ok(()),
-        Err(github_error) => {
-            // Log GitHub failure details
-            log_github_failure(&github_error);
+    // Probe available sources
+    let github = if channel == "stable" {
+        fetch_latest_release().await.ok()
+    } else {
+        fetch_latest_prerelease().await.ok()
+    };
+    let local_detected = detect_local_server_binary();
+    let local_info = if let Some(ref bin) = local_detected {
+        Some((bin.clone(), test_local_binary_version(bin).await.unwrap_or_else(|_| "unknown".into())))
+    } else {
+        None
+    };
 
-            // Check for local binary
-            if let Some(local_binary) = detect_local_server_binary() {
-                let version = test_local_binary_version(&local_binary)
-                    .await
-                    .unwrap_or_else(|_| "unknown".to_string());
-                println!(
-                    "🔎 Found local server binary: {} (version {})",
-                    local_binary.display(),
-                    version
-                );
-                println!("❓ Would you like to update from local binary instead?");
+    println!("Available update sources:");
+    if let Some(ref rel) = github {
+        println!(" - GitHub release: {}", rel.tag_name);
+    }
+    if let Some((ref bin, ref ver)) = local_info {
+        println!(" - Local binary: {} (version {})", bin.display(), ver);
+    }
 
-                // Simple stdin prompt
-                if prompt_user_confirmation()? {
-                    return update_from_local_binary(&paths, &local_binary, force).await;
-                }
-            }
+    if github.is_none() && local_info.is_none() {
+        bail!("No update sources available (GitHub release not reachable and no local binary detected)");
+    }
 
-            Err(github_error)
+    let choice = prompt_source_choice(github.is_some(), local_info.is_some())?;
+    match choice {
+        Some('G') => update_from_github(channel, &paths, force).await,
+        Some('L') => {
+            let (bin, _) = local_info.expect("local info should exist");
+            update_from_local_binary(&paths, &bin, force).await
+        }
+        _ => {
+            println!("✖ Update cancelled by user.");
+            Ok(())
         }
     }
 }
@@ -217,7 +229,7 @@ async fn update_from_github(channel: String, paths: &Paths, force: bool) -> Resu
 
     // Check current version and compare
     if let Some(current_info) = InstallationInfo::load(paths)? {
-        println!("ℹ️ Current version: {}", current_info.version);
+        println!("ℹ️ Current installed version: {}", current_info.version);
         println!("📦 Available version: {}", release.tag_name);
 
         if current_info.version == release.tag_name && !force {
@@ -288,7 +300,7 @@ async fn update_from_local_binary(paths: &Paths, source_binary: &Path, force: bo
         let current_version = &current_info.version;
         let new_version_tag = format!("{} (local)", version);
 
-        println!("ℹ️ Current version: {}", current_version);
+        println!("ℹ️ Current installed version: {}", current_version);
         println!("📦 Available version: {}", new_version_tag);
 
         // Try to get actual version of currently installed binary for better comparison
@@ -571,11 +583,7 @@ fn set_executable_permissions(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Log GitHub failure information
-fn log_github_failure(error: &anyhow::Error) {
-    println!("✖ GitHub download failed: {}", error);
-    println!("   URL: {}", GITHUB_RELEASES_LATEST);
-}
+// (removed) log_github_failure no longer used after unified source prompt
 
 /// Prompt user for confirmation
 fn prompt_user_confirmation() -> Result<bool> {
@@ -589,6 +597,53 @@ fn prompt_user_confirmation() -> Result<bool> {
 
     let response = input.trim().to_lowercase();
     Ok(response.is_empty() || response.starts_with('y'))
+}
+
+/// Prompt the user to select a source among GitHub/Local/None based on availability
+fn prompt_source_choice(has_github: bool, has_local: bool) -> Result<Option<char>> {
+    use std::io::{self, Write};
+
+    let mut options = Vec::new();
+    if has_github {
+        options.push(('G', "GitHub"));
+    }
+    if has_local {
+        options.push(('L', "Local"));
+    }
+    options.push(('N', "None"));
+
+    let mut prompt = String::from("Choose source: ");
+    for (i, (ch, label)) in options.iter().enumerate() {
+        if i > 0 {
+            prompt.push('/');
+        }
+        prompt.push('[');
+        prompt.push(*ch);
+        prompt.push(']');
+        prompt.push_str(label);
+    }
+    prompt.push_str(": ");
+
+    loop {
+        print!("{}", prompt);
+        io::stdout().flush()?;
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        let ch = input.trim().chars().next().map(|c| c.to_ascii_uppercase());
+
+        if let Some(c) = ch {
+            if c == 'N' {
+                return Ok(None);
+            }
+            if c == 'G' && has_github {
+                return Ok(Some('G'));
+            }
+            if c == 'L' && has_local {
+                return Ok(Some('L'));
+            }
+        }
+        println!("Please enter a valid choice.");
+    }
 }
 
 /// Uninstall the MCP server binary and optionally clean configuration

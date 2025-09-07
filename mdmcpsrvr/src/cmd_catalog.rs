@@ -63,12 +63,6 @@ impl CommandCatalog {
         // Get command from catalog
         let command = self.policy.get_command(&params.command_id)?;
 
-        // Validate arguments
-        self.validate_arguments(command, &params.args)
-            .map_err(|e| CatalogError::ArgumentValidation {
-                reason: e.to_string(),
-            })?;
-
         // Validate and filter environment
         let filtered_env = self
             .validate_environment(command, &params.env)
@@ -76,10 +70,21 @@ impl CommandCatalog {
                 reason: e.to_string(),
             })?;
 
-        // Validate working directory
+        // Validate working directory first so we can resolve relative paths
         let validated_cwd = self
             .validate_working_directory(command, params.cwd.as_deref())
             .map_err(|e| CatalogError::WorkingDirectoryValidation {
+                reason: e.to_string(),
+            })?;
+
+        // Enforce that any path-like arguments resolve within allowed roots
+        self
+            .enforce_path_scope(command, &params.args, validated_cwd.as_deref())
+            .map_err(|e| CatalogError::ArgumentValidation { reason: e })?;
+
+        // Validate arguments against allow/patterns
+        self.validate_arguments(command, &params.args)
+            .map_err(|e| CatalogError::ArgumentValidation {
                 reason: e.to_string(),
             })?;
 
@@ -179,6 +184,61 @@ impl CommandCatalog {
         Ok(validated)
     }
 
+    /// Enforce that path-like args (absolute or relative) stay within allowed roots
+    fn enforce_path_scope(
+        &self,
+        cmd: &CompiledCommand,
+        args: &[String],
+        cwd: Option<&Path>,
+    ) -> Result<(), String> {
+        for arg in args {
+            if is_flag_like(arg) {
+                continue;
+            }
+
+            let candidate_abs: Option<PathBuf> = match as_absolute_path(arg) {
+                Some(p) => Some(p),
+                None => {
+                    if looks_path_like(arg) {
+                        if let Some(base) = cwd {
+                            Some(base.join(arg))
+                        } else {
+                            return Err(format!(
+                                "argument '{}' looks like a path but no working directory is set for command '{}'",
+                                arg, cmd.rule.id
+                            ));
+                        }
+                    } else {
+                        None
+                    }
+                }
+            };
+
+            if let Some(p) = candidate_abs {
+                let canonical = canonicalize_for_check(&p).map_err(|e| {
+                    format!(
+                        "failed to canonicalize path argument '{}' for command '{}': {}",
+                        arg, cmd.rule.id, e
+                    )
+                })?;
+
+                if !self
+                    .policy
+                    .allowed_roots_canonical
+                    .iter()
+                    .any(|root| canonical.starts_with(root))
+                {
+                    return Err(format!(
+                        "path '{}' resolves to '{}' which is outside allowed roots",
+                        arg,
+                        canonical.display()
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Get command information by ID
     #[allow(dead_code)]
     pub fn get_command_info(&self, command_id: &str) -> Option<&CompiledCommand> {
@@ -226,6 +286,55 @@ impl CommandCatalog {
             cwd_policy_counts,
         }
     }
+}
+
+/// Heuristic: is this argument a flag (not a path)?
+fn is_flag_like(s: &str) -> bool {
+    if s.starts_with("--") || s.starts_with('-') {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        if s.len() >= 2 && s.starts_with('/') && !s.starts_with("//") {
+            return true;
+        }
+    }
+    false
+}
+
+/// Return Some(absolute_path) if the string is an absolute path-like value
+fn as_absolute_path(s: &str) -> Option<PathBuf> {
+    let p = Path::new(s);
+    if p.is_absolute() {
+        return Some(p.to_path_buf());
+    }
+    #[cfg(windows)]
+    {
+        let bytes = s.as_bytes();
+        if bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
+            return Some(PathBuf::from(s));
+        }
+    }
+    None
+}
+
+/// Heuristic for relative path-like strings (with separators or dot components)
+fn looks_path_like(s: &str) -> bool {
+    s.contains('/') || s.contains('\\') || s.starts_with('.')
+}
+
+/// Canonicalize for checking; if leaf is missing, canonicalize parent and rejoin
+fn canonicalize_for_check(path: &Path) -> anyhow::Result<PathBuf> {
+    if let Ok(c) = dunce::canonicalize(path) {
+        return Ok(c);
+    }
+    if let Some(parent) = path.parent() {
+        let parent_canon = dunce::canonicalize(parent)?;
+        if let Some(name) = path.file_name() {
+            return Ok(parent_canon.join(name));
+        }
+    }
+    anyhow::bail!("cannot canonicalize: {}", path.display())
 }
 
 /// Command catalog statistics
