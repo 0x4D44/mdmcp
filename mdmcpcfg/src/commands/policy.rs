@@ -109,11 +109,11 @@ pub async fn add_root(path: String, enable_write: bool) -> Result<()> {
     let mut policy: Value =
         serde_yaml::from_str(&content).context("Failed to parse policy file")?;
 
-    // Add to allowedRoots
+    // Add to allowed_roots
     let allowed_roots = policy
-        .get_mut("allowedRoots")
+        .get_mut("allowed_roots")
         .and_then(|v| v.as_sequence_mut())
-        .context("Policy file missing or invalid 'allowedRoots' section")?;
+        .context("Policy file missing or invalid 'allowed_roots' section")?;
 
     let new_root = Value::String(path.clone());
     if !allowed_roots.contains(&new_root) {
@@ -123,18 +123,18 @@ pub async fn add_root(path: String, enable_write: bool) -> Result<()> {
         println!("ℹ️  Root already exists: {}", path);
     }
 
-    // Add to writeRules if requested
+    // Add to write_rules if requested
     if enable_write {
         let write_rules = policy
-            .get_mut("writeRules")
+            .get_mut("write_rules")
             .and_then(|v| v.as_sequence_mut())
-            .context("Policy file missing or invalid 'writeRules' section")?;
+            .context("Policy file missing or invalid 'write_rules' section")?;
 
         let new_write_rule = serde_yaml::to_value(BTreeMap::from([
             ("path", Value::String(path.clone())),
             ("recursive", Value::Bool(true)),
-            ("maxFileBytes", Value::Number(10_000_000.into())),
-            ("createIfMissing", Value::Bool(true)),
+            ("max_file_bytes", Value::Number(10_000_000.into())),
+            ("create_if_missing", Value::Bool(true)),
         ]))
         .context("Failed to create write rule")?;
 
@@ -227,17 +227,19 @@ pub async fn add_command(
     let args_mapping = Mapping::from_iter(args.into_iter().map(|(k, v)| (Value::String(k), v)));
     command.insert("args".to_string(), Value::Mapping(args_mapping));
 
-    // Add default settings
+    // Add default settings (snake_case)
     command.insert(
-        "cwdPolicy".to_string(),
-        Value::String("withinRoot".to_string()),
+        "cwd_policy".to_string(),
+        Value::String("within_root".to_string()),
     );
-    command.insert("envAllowlist".to_string(), Value::Sequence(vec![]));
-    command.insert("timeoutMs".to_string(), Value::Number(20000.into()));
+    command.insert("env_allowlist".to_string(), Value::Sequence(vec![]));
+    command.insert("timeout_ms".to_string(), Value::Number(20000.into()));
     command.insert(
-        "maxOutputBytes".to_string(),
+        "max_output_bytes".to_string(),
         Value::Number(2_000_000.into()),
     );
+    // During early development, allow any args unless explicitly tightened
+    command.insert("allow_any_args".to_string(), Value::Bool(true));
 
     // Add platform detection
     let current_platform = if cfg!(target_os = "windows") {
@@ -286,12 +288,12 @@ fn print_policy_summary(policy: &Value) -> Result<()> {
     }
 
     // Network FS policy
-    if let Some(deny_net_fs) = policy.get("denyNetworkFS").and_then(|v| v.as_bool()) {
+    if let Some(deny_net_fs) = policy.get("deny_network_fs").and_then(|v| v.as_bool()) {
         println!("   Network FS blocked: {}", deny_net_fs);
     }
 
     // Allowed roots
-    if let Some(roots) = policy.get("allowedRoots").and_then(|v| v.as_sequence()) {
+    if let Some(roots) = policy.get("allowed_roots").and_then(|v| v.as_sequence()) {
         println!("   Allowed roots: {} entries", roots.len());
         for root in roots.iter().take(3) {
             if let Some(path) = root.as_str() {
@@ -304,7 +306,7 @@ fn print_policy_summary(policy: &Value) -> Result<()> {
     }
 
     // Write rules
-    if let Some(rules) = policy.get("writeRules").and_then(|v| v.as_sequence()) {
+    if let Some(rules) = policy.get("write_rules").and_then(|v| v.as_sequence()) {
         println!("   Write rules: {} entries", rules.len());
         for rule in rules.iter().take(2) {
             if let Some(path) = rule.get("path").and_then(|p| p.as_str()) {
@@ -339,7 +341,7 @@ fn validate_policy_structure(policy: &Value) -> Result<()> {
         .context("Policy root must be an object")?;
 
     // Check required fields
-    let required_fields = ["version", "allowedRoots", "commands"];
+    let required_fields = ["version", "allowed_roots", "commands"];
     for field in &required_fields {
         if !policy_obj.contains_key(Value::String(field.to_string())) {
             bail!("Missing required field: {}", field);
@@ -356,19 +358,19 @@ fn validate_policy_structure(policy: &Value) -> Result<()> {
         bail!("Unsupported policy version: {}. Expected: 1", version);
     }
 
-    // Validate allowedRoots
+    // Validate allowed_roots
     let allowed_roots = policy
-        .get("allowedRoots")
+        .get("allowed_roots")
         .and_then(|v| v.as_sequence())
-        .context("'allowedRoots' must be an array")?;
+        .context("'allowed_roots' must be an array")?;
 
     if allowed_roots.is_empty() {
-        bail!("'allowedRoots' cannot be empty");
+        bail!("'allowed_roots' cannot be empty");
     }
 
     for root in allowed_roots {
         if root.as_str().is_none() {
-            bail!("All entries in 'allowedRoots' must be strings");
+            bail!("All entries in 'allowed_roots' must be strings");
         }
     }
 

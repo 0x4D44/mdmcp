@@ -10,7 +10,10 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use mdmcp_common::{
     CmdRunParams, CmdRunResult, FsReadParams, FsReadResult, FsWriteParams, FsWriteResult,
     InitializeParams, InitializeResult, McpErrorCode, RpcId, RpcRequest, RpcResponse,
-    ServerCapabilities, ServerInfo,
+    ServerCapabilities, ServerInfo, PromptsListParams, PromptsListResult, PromptsGetParams, 
+    PromptsGetResult, ResourcesListParams, ResourcesListResult, ResourcesReadParams, 
+    ResourcesReadResult, PromptInfo, PromptArgument, PromptMessage, PromptContent,
+    ResourceInfo, ResourceContent,
 };
 use mdmcp_policy::CompiledPolicy;
 use serde_json::Value;
@@ -70,15 +73,17 @@ impl Server {
 
     /// Handle a JSON-RPC message line (request or notification)
     pub async fn handle_request_line(&self, line: &str) -> Result<()> {
-        debug!("Parsing JSON-RPC message: {}", line);
+        info!("📨 Incoming request: {}", line);
+        
         match rpc::parse_message(line) {
             Ok(RpcMessage::Request(request)) => {
-                debug!("Successfully parsed request: method={}, id={:?}", request.method, request.id);
+                info!("🔍 Parsed request: method='{}', id={:?}", request.method, request.id);
                 self.handle_request(request).await;
                 debug!("Request handling completed");
             }
             Ok(RpcMessage::Notification { method, params }) => {
-                debug!("Successfully parsed notification: method={}", method);
+                info!("🔔 Parsed notification: method='{}', params={}", method, 
+                      serde_json::to_string(&params).unwrap_or_else(|_| "invalid".to_string()));
                 self.handle_notification(method, params).await;
                 debug!("Notification handling completed");
             }
@@ -106,14 +111,12 @@ impl Server {
         debug!("Handling notification: method={}", method);
         match method.as_str() {
             "initialized" => {
-                info!("Received initialized notification - handshake complete");
-                eprintln!("DEBUG: Received initialized notification");
+                info!("🤝 Received initialized notification - handshake complete");
                 // The client has confirmed initialization is complete
                 // Server is now ready for normal operation
             }
             _ => {
                 debug!("Unknown notification method: {}", method);
-                eprintln!("DEBUG: Unknown notification: {}", method);
             }
         }
     }
@@ -157,11 +160,19 @@ impl Server {
         let mut tools_caps = HashMap::new();
         tools_caps.insert("listChanged".to_string(), serde_json::Value::Bool(true));
 
-        // Create minimal capabilities object with only supported features
+        // Declare prompts capability
+        let mut prompts_caps = HashMap::new();
+        prompts_caps.insert("listChanged".to_string(), serde_json::Value::Bool(true));
+
+        // Declare resources capability  
+        let mut resources_caps = HashMap::new();
+        resources_caps.insert("listChanged".to_string(), serde_json::Value::Bool(true));
+
+        // Create capabilities object with full MCP support
         let capabilities = ServerCapabilities {
             logging: None,
-            prompts: None,
-            resources: None,
+            prompts: Some(prompts_caps),
+            resources: Some(resources_caps),
             tools: Some(tools_caps),
         };
 
@@ -274,6 +285,24 @@ impl Server {
                         },
                         "required": ["command_id"]
                     }
+                },
+                {
+                    "name": "list_accessible_directories",
+                    "description": "List all directories that are accessible for file operations based on the current policy",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {},
+                        "additionalProperties": false
+                    }
+                },
+                {
+                    "name": "list_available_commands",
+                    "description": "List all commands that can be executed through run_command, with their IDs, descriptions, and allowed arguments",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {},
+                        "additionalProperties": false
+                    }
                 }
             ]
         });
@@ -333,14 +362,171 @@ impl Server {
             "run_command" => {
                 // Convert tool args to cmd.run format
                 let cmd_params = serde_json::json!({
-                    "command_id": tool_args.get("command_id"),
+                    "commandId": tool_args.get("command_id"),
                     "args": tool_args.get("args").unwrap_or(&serde_json::json!([])),
                     "stdin": tool_args.get("stdin").unwrap_or(&serde_json::json!("")),
                     "cwd": null,
                     "env": {},
-                    "timeout_ms": null
+                    "timeoutMs": null
                 });
-                self.handle_cmd_run(ctx, id, cmd_params).await
+
+                // Execute via cmd.run handler, then adapt result to MCP tool content blocks
+                let cmd_response = self.handle_cmd_run(ctx, id.clone(), cmd_params).await;
+
+                if let Some(err) = &cmd_response.error {
+                    return create_error_response(id, McpErrorCode::Internal, Some(err.message.clone()), cmd_response.error.as_ref().and_then(|e| e.data.clone()));
+                }
+
+                let raw = match cmd_response.result {
+                    Some(v) => v,
+                    None => {
+                        return create_error_response(
+                            id,
+                            McpErrorCode::Internal,
+                            Some("cmd.run returned no result".to_string()),
+                            None,
+                        )
+                    }
+                };
+
+                let parsed: Result<mdmcp_common::CmdRunResult, _> = serde_json::from_value(raw);
+                let cmd_out = match parsed {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return create_error_response(
+                            id,
+                            McpErrorCode::Internal,
+                            Some(format!("Failed to parse cmd.run result: {}", e)),
+                            None,
+                        )
+                    }
+                };
+
+                // Build MCP tool content blocks. Prefer stdout; include stderr if present.
+                let mut content_blocks: Vec<serde_json::Value> = Vec::new();
+
+                if !cmd_out.stdout.is_empty() {
+                    content_blocks.push(serde_json::json!({
+                        "type": "text",
+                        "text": cmd_out.stdout,
+                    }));
+                }
+                if !cmd_out.stderr.is_empty() {
+                    content_blocks.push(serde_json::json!({
+                        "type": "text",
+                        "text": format!("[stderr]\n{}", cmd_out.stderr),
+                    }));
+                }
+                if content_blocks.is_empty() {
+                    content_blocks.push(serde_json::json!({
+                        "type": "text",
+                        "text": "(command produced no output)",
+                    }));
+                }
+
+                // Add a trailing status note if helpful
+                if cmd_out.timed_out || cmd_out.truncated || cmd_out.exit_code != 0 {
+                    let mut notes: Vec<String> = Vec::new();
+                    if cmd_out.timed_out { notes.push("timed out".to_string()); }
+                    if cmd_out.truncated { notes.push("output truncated".to_string()); }
+                    if cmd_out.exit_code != 0 { notes.push(format!("exit code {}", cmd_out.exit_code)); }
+                    if !notes.is_empty() {
+                        content_blocks.push(serde_json::json!({
+                            "type": "text",
+                            "text": format!("[note] {}", notes.join(", ")),
+                        }));
+                    }
+                }
+
+                let result = serde_json::json!({
+                    "content": content_blocks,
+                    "isError": false
+                });
+
+                self.auditor.log_success(ctx, SuccessDetails { ..Default::default() });
+                create_success_response(id, result)
+            }
+            "list_accessible_directories" => {
+                debug!("Listing accessible directories from policy");
+                
+                let directories: Vec<_> = self.policy.allowed_roots_canonical.iter()
+                    .map(|path| path.to_string_lossy().to_string())
+                    .collect();
+                
+                // Create human-readable text content
+                let text_content = if directories.is_empty() {
+                    "No accessible directories configured.".to_string()
+                } else {
+                    let mut content = format!("Accessible directories ({} total):\n", directories.len());
+                    for (i, dir) in directories.iter().enumerate() {
+                        content.push_str(&format!("{}. {}\n", i + 1, dir));
+                    }
+                    content
+                };
+                
+                // Return proper MCP tools/call response format
+                let result = serde_json::json!({
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": text_content
+                        }
+                    ],
+                    "isError": false
+                });
+                
+                self.auditor.log_success(
+                    ctx, 
+                    SuccessDetails {
+                        ..Default::default()
+                    }
+                );
+                
+                create_success_response(id, result)
+            }
+            "list_available_commands" => {
+                debug!("Listing available commands from policy");
+                
+                // Create human-readable text content
+                let text_content = if self.policy.commands_by_id.is_empty() {
+                    "No commands available in policy.".to_string()
+                } else {
+                    let mut content = format!("Available commands ({} total):\n\n", self.policy.commands_by_id.len());
+                    for (i, (cmd_id, cmd_rule)) in self.policy.commands_by_id.iter().enumerate() {
+                        content.push_str(&format!("{}. **{}**\n", i + 1, cmd_id));
+                        content.push_str(&format!("   - Executable: {}\n", cmd_rule.rule.exec));
+                        content.push_str(&format!("   - Timeout: {}ms\n", cmd_rule.rule.timeout_ms));
+                        content.push_str(&format!("   - Max output: {} bytes\n", cmd_rule.rule.max_output_bytes));
+                        if !cmd_rule.rule.args.allow.is_empty() {
+                            content.push_str(&format!("   - Allowed args: {:?}\n", cmd_rule.rule.args.allow));
+                        }
+                        if !cmd_rule.rule.args.fixed.is_empty() {
+                            content.push_str(&format!("   - Fixed args: {:?}\n", cmd_rule.rule.args.fixed));
+                        }
+                        content.push_str(&format!("   - Platforms: {:?}\n\n", cmd_rule.rule.platform));
+                    }
+                    content
+                };
+                
+                // Return proper MCP tools/call response format
+                let result = serde_json::json!({
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": text_content
+                        }
+                    ],
+                    "isError": false
+                });
+                
+                self.auditor.log_success(
+                    ctx,
+                    SuccessDetails {
+                        ..Default::default()
+                    }
+                );
+                
+                create_success_response(id, result)
             }
             _ => {
                 self.auditor
@@ -353,6 +539,315 @@ impl Server {
                 )
             }
         }
+    }
+
+    /// Handle prompts/list request
+    async fn handle_prompts_list(&self, ctx: &AuditContext, id: RpcId, params: Value) -> RpcResponse {
+        let _list_params: PromptsListParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                self.auditor
+                    .log_error(ctx, &format!("Invalid prompts/list parameters: {}", e), None);
+                return create_error_response(
+                    id,
+                    McpErrorCode::InvalidArgs,
+                    Some(format!("Invalid parameters: {}", e)),
+                    None,
+                );
+            }
+        };
+
+        debug!("Handling prompts/list request");
+
+        // Define available prompts that help users interact with this server
+        let prompts = vec![
+            PromptInfo {
+                name: "file_operation".to_string(),
+                title: "File Operation Helper".to_string(),
+                description: Some("Generate prompts for file read/write operations within allowed directories".to_string()),
+                arguments: vec![
+                    PromptArgument {
+                        name: "operation".to_string(),
+                        description: Some("The operation type: 'read' or 'write'".to_string()),
+                        required: true,
+                    },
+                    PromptArgument {
+                        name: "path".to_string(),
+                        description: Some("The file path to operate on".to_string()),
+                        required: true,
+                    },
+                ],
+            },
+            PromptInfo {
+                name: "command_execution".to_string(),
+                title: "Command Execution Helper".to_string(),
+                description: Some("Generate prompts for running commands from the allowed catalog".to_string()),
+                arguments: vec![
+                    PromptArgument {
+                        name: "command_id".to_string(),
+                        description: Some("The command ID from the available commands".to_string()),
+                        required: true,
+                    },
+                ],
+            },
+            PromptInfo {
+                name: "server_status".to_string(),
+                title: "Server Status Query".to_string(),
+                description: Some("Generate prompts for checking server status and capabilities".to_string()),
+                arguments: vec![],
+            },
+        ];
+
+        let result = PromptsListResult {
+            prompts,
+            next_cursor: None, // No pagination for now
+        };
+
+        self.auditor.log_success(
+            ctx,
+            SuccessDetails {
+                ..Default::default()
+            },
+        );
+
+        create_success_response(id, serde_json::to_value(result).unwrap())
+    }
+
+    /// Handle prompts/get request
+    async fn handle_prompts_get(&self, ctx: &AuditContext, id: RpcId, params: Value) -> RpcResponse {
+        let get_params: PromptsGetParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                self.auditor
+                    .log_error(ctx, &format!("Invalid prompts/get parameters: {}", e), None);
+                return create_error_response(
+                    id,
+                    McpErrorCode::InvalidArgs,
+                    Some(format!("Invalid parameters: {}", e)),
+                    None,
+                );
+            }
+        };
+
+        debug!("Handling prompts/get request for: {}", get_params.name);
+
+        let messages = match get_params.name.as_str() {
+            "file_operation" => {
+                let operation = get_params.arguments.get("operation")
+                    .and_then(|v| v.as_str()).unwrap_or("read");
+                let path = get_params.arguments.get("path")
+                    .and_then(|v| v.as_str()).unwrap_or("/path/to/file");
+
+                vec![PromptMessage {
+                    role: "user".to_string(),
+                    content: PromptContent::Text {
+                        text: format!(
+                            "I need to {} the file at '{}'. Can you help me use the appropriate MCP tool to {} this file safely within the server's policy constraints?",
+                            operation, path, operation
+                        ),
+                    },
+                }]
+            }
+            "command_execution" => {
+                let command_id = get_params.arguments.get("command_id")
+                    .and_then(|v| v.as_str()).unwrap_or("echo");
+
+                vec![PromptMessage {
+                    role: "user".to_string(),
+                    content: PromptContent::Text {
+                        text: format!(
+                            "I want to execute the '{}' command. Can you show me how to use the run_command tool with the proper arguments according to the server's command catalog?",
+                            command_id
+                        ),
+                    },
+                }]
+            }
+            "server_status" => {
+                vec![PromptMessage {
+                    role: "user".to_string(),
+                    content: PromptContent::Text {
+                        text: "Can you help me understand what this MCP server can do? Please show me what directories I can access, what commands are available, and how to use the various tools provided.".to_string(),
+                    },
+                }]
+            }
+            _ => {
+                let error_msg = format!("Unknown prompt: {}", get_params.name);
+                self.auditor.log_error(ctx, &error_msg, None);
+                return create_error_response(
+                    id,
+                    McpErrorCode::InvalidArgs,
+                    Some(error_msg),
+                    None,
+                );
+            }
+        };
+
+        let result = PromptsGetResult { messages };
+
+        self.auditor.log_success(
+            ctx,
+            SuccessDetails {
+                ..Default::default()
+            },
+        );
+
+        create_success_response(id, serde_json::to_value(result).unwrap())
+    }
+
+    /// Handle resources/list request
+    async fn handle_resources_list(&self, ctx: &AuditContext, id: RpcId, params: Value) -> RpcResponse {
+        let _list_params: ResourcesListParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                self.auditor
+                    .log_error(ctx, &format!("Invalid resources/list parameters: {}", e), None);
+                return create_error_response(
+                    id,
+                    McpErrorCode::InvalidArgs,
+                    Some(format!("Invalid parameters: {}", e)),
+                    None,
+                );
+            }
+        };
+
+        debug!("Handling resources/list request");
+
+        // Define available resources that expose server information
+        let resources = vec![
+            ResourceInfo {
+                uri: "mdmcp://server/config".to_string(),
+                name: "Server Configuration".to_string(),
+                description: Some("Current server policy configuration and settings".to_string()),
+                mime_type: Some("application/json".to_string()),
+            },
+            ResourceInfo {
+                uri: "mdmcp://server/capabilities".to_string(),
+                name: "Server Capabilities".to_string(),
+                description: Some("Detailed information about server capabilities and features".to_string()),
+                mime_type: Some("application/json".to_string()),
+            },
+            ResourceInfo {
+                uri: "mdmcp://server/status".to_string(),
+                name: "Server Status".to_string(),
+                description: Some("Current server runtime status and health information".to_string()),
+                mime_type: Some("application/json".to_string()),
+            },
+        ];
+
+        let result = ResourcesListResult {
+            resources,
+            next_cursor: None, // No pagination for now
+        };
+
+        self.auditor.log_success(
+            ctx,
+            SuccessDetails {
+                ..Default::default()
+            },
+        );
+
+        create_success_response(id, serde_json::to_value(result).unwrap())
+    }
+
+    /// Handle resources/read request
+    async fn handle_resources_read(&self, ctx: &AuditContext, id: RpcId, params: Value) -> RpcResponse {
+        let read_params: ResourcesReadParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                self.auditor
+                    .log_error(ctx, &format!("Invalid resources/read parameters: {}", e), None);
+                return create_error_response(
+                    id,
+                    McpErrorCode::InvalidArgs,
+                    Some(format!("Invalid parameters: {}", e)),
+                    None,
+                );
+            }
+        };
+
+        debug!("Handling resources/read request for: {}", read_params.uri);
+
+        let contents = match read_params.uri.as_str() {
+            "mdmcp://server/config" => {
+                let config_info = serde_json::json!({
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "policy_hash": &self.policy.policy_hash[..16],
+                    "allowed_roots": self.policy.allowed_roots_canonical.len(),
+                    "available_commands": self.policy.commands_by_id.len(),
+                    "capabilities": ["tools", "prompts", "resources"]
+                });
+
+                vec![ResourceContent::Text {
+                    text: serde_json::to_string_pretty(&config_info).unwrap(),
+                    mime_type: Some("application/json".to_string()),
+                }]
+            }
+            "mdmcp://server/capabilities" => {
+                let capabilities_info = serde_json::json!({
+                    "tools": {
+                        "read_file": "Read files within allowed directories",
+                        "write_file": "Write files within allowed directories with policy constraints",
+                        "run_command": "Execute pre-approved commands from the catalog",
+                        "list_accessible_directories": "List all directories accessible for file operations",
+                        "list_available_commands": "List all commands available for execution"
+                    },
+                    "prompts": {
+                        "file_operation": "Helper for file read/write operations",
+                        "command_execution": "Helper for command execution",
+                        "server_status": "Helper for server status queries"
+                    },
+                    "resources": {
+                        "mdmcp://server/config": "Server configuration information",
+                        "mdmcp://server/capabilities": "Detailed capability information",
+                        "mdmcp://server/status": "Runtime status information"
+                    }
+                });
+
+                vec![ResourceContent::Text {
+                    text: serde_json::to_string_pretty(&capabilities_info).unwrap(),
+                    mime_type: Some("application/json".to_string()),
+                }]
+            }
+            "mdmcp://server/status" => {
+                let status_info = serde_json::json!({
+                    "server": "mdmcpsrvr",
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "protocol_version": "2024-11-05",
+                    "status": "running",
+                    "policy": {
+                        "hash": &self.policy.policy_hash[..16],
+                        "roots_count": self.policy.allowed_roots_canonical.len(),
+                        "commands_count": self.policy.commands_by_id.len()
+                    }
+                });
+
+                vec![ResourceContent::Text {
+                    text: serde_json::to_string_pretty(&status_info).unwrap(),
+                    mime_type: Some("application/json".to_string()),
+                }]
+            }
+            _ => {
+                let error_msg = format!("Unknown resource URI: {}", read_params.uri);
+                self.auditor.log_error(ctx, &error_msg, None);
+                return create_error_response(
+                    id,
+                    McpErrorCode::InvalidArgs,
+                    Some(error_msg),
+                    None,
+                );
+            }
+        };
+
+        let result = ResourcesReadResult { contents };
+
+        self.auditor.log_success(
+            ctx,
+            SuccessDetails {
+                ..Default::default()
+            },
+        );
+
+        create_success_response(id, serde_json::to_value(result).unwrap())
     }
 
     /// Handle a parsed JSON-RPC request
@@ -395,6 +890,22 @@ impl Server {
                 self.handle_tools_call(&audit_ctx, request.id, request.params)
                     .await
             }
+            "prompts/list" => {
+                self.handle_prompts_list(&audit_ctx, request.id, request.params)
+                    .await
+            }
+            "prompts/get" => {
+                self.handle_prompts_get(&audit_ctx, request.id, request.params)
+                    .await
+            }
+            "resources/list" => {
+                self.handle_resources_list(&audit_ctx, request.id, request.params)
+                    .await
+            }
+            "resources/read" => {
+                self.handle_resources_read(&audit_ctx, request.id, request.params)
+                    .await
+            }
             "fs.read" => {
                 self.handle_fs_read(&audit_ctx, request.id, request.params)
                     .await
@@ -418,13 +929,17 @@ impl Server {
             }
         };
 
+        // Log response summary before sending
+        if response.error.is_some() {
+            info!("⚠️  Processing '{}' -> ERROR", request.method);
+        } else {
+            info!("✨ Processing '{}' -> SUCCESS", request.method);
+        }
+
         // Send response
-        debug!("Sending response for method: {}", request.method);
         if let Err(e) = send_response(&response).await {
             error!("Failed to send response: {}", e);
             eprintln!("Server error: Failed to send response: {}", e);
-        } else {
-            debug!("Response sent successfully for method: {}", request.method);
         }
     }
 
@@ -494,8 +1009,8 @@ impl Server {
                 return create_error_response(
                     id,
                     McpErrorCode::PolicyDeny,
-                    Some(format!("Network filesystem denied: {}", path)),
-                    Some(serde_json::json!({"rule": "networkFsDenied"})),
+                    Some(format!("Network filesystem access blocked: {}. This policy blocks access to network-mounted filesystems (UNC paths, mapped network drives) for security reasons. To allow network filesystem access, set 'deny_network_fs: false' in your policy configuration.", path)),
+                    Some(serde_json::json!({"rule": "networkFsDenied", "path": path})),
                 );
             }
             Err(FsError::SpecialFile { path }) => {
@@ -507,11 +1022,16 @@ impl Server {
                         ..Default::default()
                     }),
                 );
+                let error_msg = if path.contains("(directory)") {
+                    format!("Cannot read directory as file: {}. Use the 'run_command' tool with 'dir' command to list directory contents instead.", path)
+                } else {
+                    format!("Cannot read special file: {}. Only regular files can be read.", path)
+                };
                 return create_error_response(
                     id,
                     McpErrorCode::PolicyDeny,
-                    Some(format!("Special file not allowed: {}", path)),
-                    Some(serde_json::json!({"rule": "specialFile"})),
+                    Some(error_msg),
+                    Some(serde_json::json!({"rule": "specialFile", "path": path})),
                 );
             }
             Err(e) => {
@@ -923,7 +1443,9 @@ mod tests {
 
     async fn create_test_server() -> Server {
         let temp_dir = tempdir().unwrap();
+        // Prevent automatic deletion so paths remain valid during tests
         let test_root = temp_dir.path().to_path_buf();
+        let _persisted = temp_dir.keep();
 
         let policy = Policy {
             version: 1,
@@ -938,7 +1460,7 @@ mod tests {
             commands: vec![CommandRule {
                 id: "echo".to_string(),
                 exec: if cfg!(windows) {
-                    "cmd".to_string()
+                    "C:/Windows/System32/cmd.exe".to_string()
                 } else {
                     "/bin/echo".to_string()
                 },
@@ -956,6 +1478,7 @@ mod tests {
                     "windows".to_string(),
                     "macos".to_string(),
                 ],
+                allow_any_args: false,
             }],
             logging: LoggingConfig::default(),
             limits: LimitsConfig::default(),

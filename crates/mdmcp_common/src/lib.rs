@@ -234,6 +234,132 @@ fn default_encoding() -> String {
     "utf8".to_string()
 }
 
+/// Parameters for prompts/list method
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptsListParams {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+}
+
+/// Result of prompts/list method
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptsListResult {
+    pub prompts: Vec<PromptInfo>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "nextCursor")]
+    pub next_cursor: Option<String>,
+}
+
+/// Information about a prompt
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptInfo {
+    pub name: String,
+    pub title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub arguments: Vec<PromptArgument>,
+}
+
+/// Prompt argument definition
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptArgument {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub required: bool,
+}
+
+/// Parameters for prompts/get method
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptsGetParams {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub arguments: HashMap<String, serde_json::Value>,
+}
+
+/// Result of prompts/get method
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptsGetResult {
+    pub messages: Vec<PromptMessage>,
+}
+
+/// A message in a prompt
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptMessage {
+    pub role: String, // "user", "assistant", "system"
+    pub content: PromptContent,
+}
+
+/// Content of a prompt message
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum PromptContent {
+    #[serde(rename = "text")]
+    Text { text: String },
+    #[serde(rename = "image")]
+    Image { 
+        #[serde(rename = "imageUrl")]
+        image_url: String 
+    },
+}
+
+/// Parameters for resources/list method
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourcesListParams {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+}
+
+/// Result of resources/list method
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourcesListResult {
+    pub resources: Vec<ResourceInfo>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "nextCursor")]
+    pub next_cursor: Option<String>,
+}
+
+/// Information about a resource
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourceInfo {
+    pub uri: String,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "mimeType")]
+    pub mime_type: Option<String>,
+}
+
+/// Parameters for resources/read method
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourcesReadParams {
+    pub uri: String,
+}
+
+/// Result of resources/read method
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourcesReadResult {
+    pub contents: Vec<ResourceContent>,
+}
+
+/// Content of a resource
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum ResourceContent {
+    #[serde(rename = "text")]
+    Text { 
+        text: String,
+        #[serde(skip_serializing_if = "Option::is_none", rename = "mimeType")]
+        mime_type: Option<String>,
+    },
+    #[serde(rename = "blob")]
+    Blob { 
+        blob: String, // base64 encoded
+        #[serde(skip_serializing_if = "Option::is_none", rename = "mimeType")]
+        mime_type: Option<String>,
+    },
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

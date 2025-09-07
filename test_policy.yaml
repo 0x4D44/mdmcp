@@ -1,0 +1,36 @@
+version: 1
+deny_network_fs: true
+allowed_roots:
+  - "C:\\temp"
+  - "C:\\Users"
+write_rules:
+  - path: "C:\\temp"
+    recursive: true
+    max_file_bytes: 1000000
+    create_if_missing: true
+commands:
+  - id: "echo"
+    exec: "C:\\Windows\\System32\\cmd.exe"
+    args:
+      fixed: ["/C", "echo"]
+    cwd_policy: "within_root"
+    env_allowlist: []
+    timeout_ms: 5000
+    max_output_bytes: 10000
+    platform: ["windows"]
+    allow_any_args: true
+  - id: "dir"
+    exec: "C:\\Windows\\System32\\cmd.exe"
+    args:
+      fixed: ["/C", "dir"]
+    cwd_policy: "within_root"
+    env_allowlist: []
+    timeout_ms: 10000
+    max_output_bytes: 50000
+    platform: ["windows"]
+    allow_any_args: true
+logging:
+  level: "info"
+limits:
+  max_read_bytes: 20000000
+  max_cmd_concurrency: 3

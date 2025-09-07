@@ -34,6 +34,7 @@ pub enum PolicyError {
 /// Root policy configuration structure
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[serde(deny_unknown_fields)]
 pub struct Policy {
     pub version: u32,
     #[serde(default)]
@@ -52,6 +53,7 @@ pub struct Policy {
 /// Write permission rule for specific paths
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[serde(deny_unknown_fields)]
 pub struct WriteRule {
     pub path: String,
     #[serde(default)]
@@ -65,6 +67,7 @@ pub struct WriteRule {
 /// Command execution rule
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[serde(deny_unknown_fields)]
 pub struct CommandRule {
     pub id: String,
     pub exec: String,
@@ -80,10 +83,14 @@ pub struct CommandRule {
     pub max_output_bytes: u64,
     #[serde(default)]
     pub platform: Vec<String>,
+    /// If true, skip argument validation (development-friendly default)
+    #[serde(default = "default_allow_any_args")]
+    pub allow_any_args: bool,
 }
 
 /// Argument validation policy for commands
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(deny_unknown_fields)]
 pub struct ArgsPolicy {
     #[serde(default)]
     pub allow: Vec<String>,
@@ -95,6 +102,7 @@ pub struct ArgsPolicy {
 
 /// Argument pattern for regex validation
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ArgPattern {
     #[serde(rename = "type")]
     pub pattern_type: String,
@@ -113,6 +121,7 @@ pub enum CwdPolicy {
 
 /// Logging configuration
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct LoggingConfig {
     #[serde(default = "default_log_level")]
     pub level: String,
@@ -134,6 +143,7 @@ impl Default for LoggingConfig {
 /// Resource limits configuration
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[serde(deny_unknown_fields)]
 pub struct LimitsConfig {
     #[serde(default = "default_max_read_bytes")]
     pub max_read_bytes: u64,
@@ -225,12 +235,14 @@ impl Policy {
             }
 
             let exec_path = Path::new(&cmd.exec);
-            let exec_canonical = if exec_path.is_absolute() {
-                canonicalize_path(exec_path)?
-            } else {
-                // Try to find in PATH
-                find_in_path(&cmd.exec)?
-            };
+            if !exec_path.is_absolute() {
+                return Err(PolicyError::InvalidPath(format!(
+                    "Executable must be an absolute path: {}",
+                    cmd.exec
+                ))
+                .into());
+            }
+            let exec_canonical = canonicalize_path(exec_path)?;
 
             let mut arg_patterns = Vec::new();
             for pattern in &cmd.args.patterns {
@@ -301,19 +313,24 @@ impl CompiledPolicy {
 
     /// Validate command arguments
     pub fn validate_args(&self, cmd: &CompiledCommand, args: &[String]) -> Result<(), PolicyError> {
-        // If fixed args are specified, args must match exactly
-        if !cmd.rule.args.fixed.is_empty() {
-            if args != cmd.rule.args.fixed {
-                return Err(PolicyError::PolicyDenied {
-                    rule: "fixedArgsOnly".to_string(),
-                });
-            }
+        // Allow all args if the command opts out of validation
+        if cmd.rule.allow_any_args {
             return Ok(());
         }
+        // Fixed args are handled during execution (prepended to user args)
+        // Here we only validate the user-provided args against allow/patterns
+        // Note: args parameter contains only user args, not fixed args
 
         // Check each argument
         for arg in args {
             let mut allowed = false;
+
+            // 1) If the argument looks like an absolute path and is within allowed roots, allow it
+            if is_absolute_path_like(arg) {
+                if is_within_allowed_roots_str(self, arg) {
+                    allowed = true;
+                }
+            }
 
             // Check against allow list
             if cmd.rule.args.allow.contains(arg) {
@@ -342,26 +359,24 @@ impl CompiledPolicy {
 }
 
 fn expand_path(path: &str) -> Result<PathBuf> {
-    if path.starts_with('~') {
+    if path == "~" {
         let home = dirs::home_dir().context("Failed to get home directory")?;
-        Ok(home.join(&path[2..]))
-    } else {
-        Ok(PathBuf::from(path))
+        return Ok(home);
     }
+    if path.starts_with("~/") || (cfg!(windows) && path.starts_with("~\\")) {
+        let home = dirs::home_dir().context("Failed to get home directory")?;
+        let suffix = &path[2..];
+        return Ok(home.join(suffix));
+    }
+    Ok(PathBuf::from(path))
 }
 
 fn canonicalize_path(path: &Path) -> Result<PathBuf> {
-    path.canonicalize()
+    dunce::canonicalize(path)
         .with_context(|| format!("Failed to canonicalize path: {}", path.display()))
 }
 
-fn find_in_path(program: &str) -> Result<PathBuf> {
-    if let Ok(path) = which::which(program) {
-        Ok(path)
-    } else {
-        Err(PolicyError::InvalidPath(format!("Program not found in PATH: {}", program)).into())
-    }
-}
+// Removed PATH search: executables must be absolute
 
 fn is_platform_supported(platforms: &[String]) -> bool {
     let current_platform = if cfg!(target_os = "windows") {
@@ -408,6 +423,89 @@ fn default_max_read_bytes() -> u64 {
 
 fn default_max_cmd_concurrency() -> u32 {
     2
+}
+
+fn default_allow_any_args() -> bool {
+    true
+}
+
+fn is_absolute_path_like(s: &str) -> bool {
+    if cfg!(windows) {
+        if s.starts_with("\\\\") { // UNC path
+            return true;
+        }
+        let bytes = s.as_bytes();
+        if bytes.len() >= 3
+            && bytes[1] == b':'
+            && (bytes[2] == b'\\' || bytes[2] == b'/')
+            && (bytes[0].is_ascii_alphabetic())
+        {
+            return true;
+        }
+        false
+    } else {
+        s.starts_with('/')
+    }
+}
+
+fn normalize_for_windows_compare(s: &str) -> String {
+    let mut out = s.replace('/', "\\").to_lowercase();
+    // Remove trailing backslash except for root like "c:\\"
+    if out.len() > 3 && out.ends_with('\\') {
+        out.pop();
+    }
+    out
+}
+
+fn is_within_allowed_roots_str(policy: &CompiledPolicy, arg: &str) -> bool {
+    // Try canonicalization first
+    if let Ok(canon) = canonicalize_path(Path::new(arg)) {
+        for allowed in &policy.allowed_roots_canonical {
+            if canon.starts_with(allowed) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Fallback to string-based comparison (best-effort)
+    if cfg!(windows) {
+        let arg_norm = normalize_for_windows_compare(arg);
+        for allowed in &policy.allowed_roots_canonical {
+            let allowed_str = normalize_for_windows_compare(&allowed.to_string_lossy());
+            if arg_norm == allowed_str {
+                return true;
+            }
+            if arg_norm.starts_with(&allowed_str) {
+                // Ensure boundary: next char must be separator
+                if arg_norm.len() == allowed_str.len() {
+                    return true;
+                }
+                let next = arg_norm.as_bytes().get(allowed_str.len());
+                if matches!(next, Some(b'\\')) {
+                    return true;
+                }
+            }
+        }
+        false
+    } else {
+        // Unix fallback
+        for allowed in &policy.allowed_roots_canonical {
+            let allowed_str = allowed.to_string_lossy();
+            if arg == allowed_str {
+                return true;
+            }
+            if arg.starts_with(&*allowed_str) {
+                if arg.len() == allowed_str.len() {
+                    return true;
+                }
+                if arg.as_bytes().get(allowed_str.len()) == Some(&b'/') {
+                    return true;
+                }
+            }
+        }
+        false
+    }
 }
 
 #[cfg(test)]
@@ -512,6 +610,7 @@ commands:
                 timeout_ms: 30000,
                 max_output_bytes: 1000000,
                 platform: vec!["linux".to_string()],
+                allow_any_args: false,
             },
             exec_canonical: PathBuf::from("/bin/echo"),
             arg_patterns: vec![],

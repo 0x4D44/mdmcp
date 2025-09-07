@@ -5,32 +5,32 @@
 version: 1
 
 # Deny access to network-mounted filesystems for security
-denyNetworkFS: true
+deny_network_fs: true
 
 # Define allowed root directories for file operations
 # All file read/write operations must be within these directories
-allowedRoots:
+allowed_roots:
   - "~/code"                    # User code directory
   - "~/Documents/projects"      # Project documents
   - "/tmp/mdmcp-scratch"        # Temporary workspace (Unix)
   - "C:/Temp/mdmcp-scratch"     # Temporary workspace (Windows)
 
 # Write permissions for specific directories
-writeRules:
+write_rules:
   - path: "~/code/scratch"
     recursive: true
-    maxFileBytes: 10000000      # 10MB max file size
-    createIfMissing: true
+    max_file_bytes: 10000000      # 10MB max file size
+    create_if_missing: true
 
   - path: "/tmp/mdmcp-scratch"
     recursive: true
-    maxFileBytes: 5000000       # 5MB max file size
-    createIfMissing: true
+    max_file_bytes: 5000000       # 5MB max file size
+    create_if_missing: true
 
   - path: "C:/Temp/mdmcp-scratch"
     recursive: true
-    maxFileBytes: 5000000       # 5MB max file size
-    createIfMissing: true
+    max_file_bytes: 5000000       # 5MB max file size
+    create_if_missing: true
 
 # Command execution rules
 commands:
@@ -39,22 +39,24 @@ commands:
     exec: "/bin/ls"
     args:
       allow: ["-l", "-la", "-a", "-h", "-t", "-r"]
-    cwdPolicy: "withinRoot"
-    envAllowlist: []
-    timeoutMs: 5000
-    maxOutputBytes: 1000000
+    cwd_policy: "within_root"
+    env_allowlist: []
+    timeout_ms: 5000
+    max_output_bytes: 1000000
     platform: ["linux", "macos"]
+    allow_any_args: false
 
   # Directory listing (Windows)
   - id: "dir"
     exec: "C:/Windows/System32/cmd.exe"
     args:
       fixed: ["/c", "dir"]
-    cwdPolicy: "withinRoot"
-    envAllowlist: []
-    timeoutMs: 5000
-    maxOutputBytes: 1000000
+    cwd_policy: "within_root"
+    env_allowlist: []
+    timeout_ms: 5000
+    max_output_bytes: 1000000
     platform: ["windows"]
+    allow_any_args: true
 
   # File search with ripgrep
   - id: "rg"
@@ -64,11 +66,12 @@ commands:
       patterns:
         - type: "regex"
           value: "^[\\w\\-\\./@:+#*?\\[\\]\\s]+$"  # Safe search patterns
-    cwdPolicy: "withinRoot"
-    envAllowlist: ["RIPGREP_CONFIG_PATH"]
-    timeoutMs: 30000
-    maxOutputBytes: 5000000
+    cwd_policy: "within_root"
+    env_allowlist: ["RIPGREP_CONFIG_PATH"]
+    timeout_ms: 30000
+    max_output_bytes: 5000000
     platform: ["linux", "macos"]
+    allow_any_args: false
 
   # Git operations (read-only)
   - id: "git"
@@ -78,11 +81,12 @@ commands:
         "status", "log", "show", "diff", "rev-parse", "describe",
         "branch", "tag", "remote", "config", "--get"
       ]
-    cwdPolicy: "withinRoot"
-    envAllowlist: ["GIT_CONFIG_GLOBAL", "GIT_ALLOW_PROTOCOL"]
-    timeoutMs: 30000
-    maxOutputBytes: 5000000
+    cwd_policy: "within_root"
+    env_allowlist: ["GIT_CONFIG_GLOBAL", "GIT_ALLOW_PROTOCOL"]
+    timeout_ms: 30000
+    max_output_bytes: 5000000
     platform: ["linux", "macos"]
+    allow_any_args: false
 
   # File operations
   - id: "cat"
@@ -91,11 +95,12 @@ commands:
       patterns:
         - type: "regex"
           value: "^[\\w\\-\\./@:+\\s]+$"  # Safe file paths only
-    cwdPolicy: "withinRoot"
-    envAllowlist: []
-    timeoutMs: 10000
-    maxOutputBytes: 2000000
+    cwd_policy: "within_root"
+    env_allowlist: []
+    timeout_ms: 10000
+    max_output_bytes: 2000000
     platform: ["linux", "macos"]
+    allow_any_args: false
 
   - id: "head"
     exec: "/usr/bin/head"
@@ -104,11 +109,12 @@ commands:
       patterns:
         - type: "regex"
           value: "^[\\w\\-\\./@:+\\s]+$"  # Safe file paths only
-    cwdPolicy: "withinRoot"
-    envAllowlist: []
-    timeoutMs: 5000
-    maxOutputBytes: 1000000
+    cwd_policy: "within_root"
+    env_allowlist: []
+    timeout_ms: 5000
+    max_output_bytes: 1000000
     platform: ["linux", "macos"]
+    allow_any_args: false
 
   - id: "tail"
     exec: "/usr/bin/tail"
@@ -117,11 +123,12 @@ commands:
       patterns:
         - type: "regex"
           value: "^[\\w\\-\\./@:+\\s]+$"  # Safe file paths only
-    cwdPolicy: "withinRoot"
-    envAllowlist: []
-    timeoutMs: 5000
-    maxOutputBytes: 1000000
+    cwd_policy: "within_root"
+    env_allowlist: []
+    timeout_ms: 5000
+    max_output_bytes: 1000000
     platform: ["linux", "macos"]
+    allow_any_args: false
 
   # Basic text processing
   - id: "wc"
@@ -131,11 +138,12 @@ commands:
       patterns:
         - type: "regex"
           value: "^[\\w\\-\\./@:+\\s]+$"
-    cwdPolicy: "withinRoot"
-    envAllowlist: []
-    timeoutMs: 10000
-    maxOutputBytes: 100000
+    cwd_policy: "within_root"
+    env_allowlist: []
+    timeout_ms: 10000
+    max_output_bytes: 100000
     platform: ["linux", "macos"]
+    allow_any_args: false
 
   # Find files (restricted)
   - id: "find"
@@ -145,22 +153,24 @@ commands:
       patterns:
         - type: "regex"
           value: "^[\\w\\-\\./@:+*?\\[\\]\\s]+$"
-    cwdPolicy: "withinRoot"
-    envAllowlist: []
-    timeoutMs: 30000
-    maxOutputBytes: 2000000
+    cwd_policy: "within_root"
+    env_allowlist: []
+    timeout_ms: 30000
+    max_output_bytes: 2000000
     platform: ["linux", "macos"]
+    allow_any_args: false
 
   # PowerShell (Windows) - limited commands
   - id: "powershell-get"
     exec: "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
     args:
       fixed: ["-Command", "Get-ChildItem"]
-    cwdPolicy: "withinRoot"
-    envAllowlist: []
-    timeoutMs: 10000
-    maxOutputBytes: 1000000
+    cwd_policy: "within_root"
+    env_allowlist: []
+    timeout_ms: 10000
+    max_output_bytes: 1000000
     platform: ["windows"]
+    allow_any_args: true
 
 # Logging configuration
 logging:
@@ -170,5 +180,5 @@ logging:
 
 # Resource limits
 limits:
-  maxReadBytes: 20000000      # 20MB maximum read size
-  maxCmdConcurrency: 3        # Maximum 3 concurrent commands
+  max_read_bytes: 20000000      # 20MB maximum read size
+  max_cmd_concurrency: 3        # Maximum 3 concurrent commands

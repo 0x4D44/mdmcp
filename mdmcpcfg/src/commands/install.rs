@@ -118,7 +118,8 @@ pub async fn run(
 
                 // Check for local binary
                 if let Some(local_binary) = detect_local_server_binary() {
-                    println!("🔍 Found local server binary: {}", local_binary.display());
+                    let version = test_local_binary_version(&local_binary).await.unwrap_or_else(|_| "unknown".to_string());
+                    println!("🔍 Found local server binary: {} (version {})", local_binary.display(), version);
                     println!("❓ Would you like to install from local binary instead?");
 
                     // Simple stdin prompt
@@ -139,7 +140,7 @@ pub async fn run(
 }
 
 /// Update the MCP server binary
-pub async fn update(channel: String, rollback: bool) -> Result<()> {
+pub async fn update(channel: String, rollback: bool, force: bool) -> Result<()> {
     let paths = Paths::new()?;
 
     if rollback {
@@ -168,7 +169,7 @@ pub async fn update(channel: String, rollback: bool) -> Result<()> {
     }
 
     // Try GitHub update first, fallback to local if available
-    match update_from_github(channel, &paths).await {
+    match update_from_github(channel, &paths, force).await {
         Ok(()) => Ok(()),
         Err(github_error) => {
             // Log GitHub failure details
@@ -176,12 +177,13 @@ pub async fn update(channel: String, rollback: bool) -> Result<()> {
 
             // Check for local binary
             if let Some(local_binary) = detect_local_server_binary() {
-                println!("🔍 Found local server binary: {}", local_binary.display());
+                let version = test_local_binary_version(&local_binary).await.unwrap_or_else(|_| "unknown".to_string());
+                println!("🔍 Found local server binary: {} (version {})", local_binary.display(), version);
                 println!("❓ Would you like to update from local binary instead?");
 
                 // Simple stdin prompt
                 if prompt_user_confirmation()? {
-                    return update_from_local_binary(&paths, &local_binary).await;
+                    return update_from_local_binary(&paths, &local_binary, force).await;
                 }
             }
 
@@ -191,7 +193,7 @@ pub async fn update(channel: String, rollback: bool) -> Result<()> {
 }
 
 /// Update from GitHub (extracted from original update logic)
-async fn update_from_github(channel: String, paths: &Paths) -> Result<()> {
+async fn update_from_github(channel: String, paths: &Paths, force: bool) -> Result<()> {
     // Fetch latest release
     let release = if channel == "stable" {
         fetch_latest_release().await?
@@ -199,19 +201,28 @@ async fn update_from_github(channel: String, paths: &Paths) -> Result<()> {
         fetch_latest_prerelease().await?
     };
 
-    println!("📦 Latest version: {}", release.tag_name);
-
     // Check current version and compare
     if let Some(current_info) = InstallationInfo::load(paths)? {
         println!("📌 Current version: {}", current_info.version);
         println!("🆕 Available version: {}", release.tag_name);
 
-        if current_info.version == release.tag_name {
+        if current_info.version == release.tag_name && !force {
             println!("✅ Already up to date!");
             return Ok(());
         }
+
+        if force {
+            println!("⚠️  Force updating to version {} (reinstall)", release.tag_name);
+        } else {
+            // Ask for confirmation
+            println!("❓ Update to version {}?", release.tag_name);
+            if !prompt_user_confirmation()? {
+                println!("❌ Update cancelled");
+                return Ok(());
+            }
+        }
     } else {
-        println!("🆕 New version: {}", release.tag_name);
+        println!("🆕 Installing version: {}", release.tag_name);
     }
 
     // Backup current binary
@@ -236,7 +247,7 @@ async fn update_from_github(channel: String, paths: &Paths) -> Result<()> {
 }
 
 /// Update from local binary
-async fn update_from_local_binary(paths: &Paths, source_binary: &Path) -> Result<()> {
+async fn update_from_local_binary(paths: &Paths, source_binary: &Path, force: bool) -> Result<()> {
     println!("📦 Updating from local binary: {}", source_binary.display());
 
     // Validate local binary
@@ -273,7 +284,7 @@ async fn update_from_local_binary(paths: &Paths, source_binary: &Path) -> Result
                 );
 
                 // Compare the actual running versions, not just the stored metadata
-                if actual_current_version == version && version != "local" {
+                if actual_current_version == version && version != "local" && !force {
                     println!("✅ Already up to date - both binaries report same version!");
                     return Ok(());
                 }
@@ -281,7 +292,7 @@ async fn update_from_local_binary(paths: &Paths, source_binary: &Path) -> Result
         }
 
         // Only skip if versions are identical AND the current installation is also local
-        if current_info.version == new_version_tag && version != "local" {
+        if current_info.version == new_version_tag && version != "local" && !force {
             println!("✅ Already up to date with local version!");
             return Ok(());
         }
@@ -460,50 +471,26 @@ async fn test_local_binary_version(binary_path: &Path) -> Result<String> {
     use std::process::Command;
 
     // Try --version first
-    println!("🔍 Testing local binary: {}", binary_path.display());
     let version_result = Command::new(binary_path).arg("--version").output();
 
     if let Ok(output) = version_result {
         if output.status.success() {
             let version_output = String::from_utf8_lossy(&output.stdout);
-            println!("📋 Version output: {}", version_output.trim());
-
             if let Some(version) = parse_version_from_output(&version_output) {
-                println!("✅ Parsed version: {}", version);
                 return Ok(version);
-            } else {
-                println!("⚠️  Could not parse version from output, checking stderr...");
-                let stderr_output = String::from_utf8_lossy(&output.stderr);
-                if !stderr_output.trim().is_empty() {
-                    println!("📋 Stderr: {}", stderr_output.trim());
-                }
-            }
-        } else {
-            println!(
-                "❌ --version command failed with exit code: {:?}",
-                output.status.code()
-            );
-            let stderr_output = String::from_utf8_lossy(&output.stderr);
-            if !stderr_output.trim().is_empty() {
-                println!("📋 Stderr: {}", stderr_output.trim());
             }
         }
-    } else {
-        println!("❌ Failed to execute --version command");
     }
 
     // Try --help as fallback
-    println!("🔄 Trying --help as fallback...");
     let help_result = Command::new(binary_path).arg("--help").output();
 
     if let Ok(output) = help_result {
         if output.status.success() {
             let help_output = String::from_utf8_lossy(&output.stdout);
             if let Some(version) = parse_version_from_output(&help_output) {
-                println!("✅ Parsed version from help: {}", version);
                 return Ok(version);
             }
-            println!("✅ Binary responds to --help but no version found - using 'local'");
             return Ok("local".to_string());
         }
     }
@@ -513,11 +500,6 @@ async fn test_local_binary_version(binary_path: &Path) -> Result<String> {
 
 /// Parse version from command output
 fn parse_version_from_output(output: &str) -> Option<String> {
-    println!("🔍 Attempting to parse version from output:");
-    for (i, line) in output.lines().enumerate() {
-        println!("  Line {}: '{}'", i + 1, line.trim());
-    }
-
     // Look for version patterns like "mdmcpsrvr 0.1.0", "version 0.1.0", or standalone "v1.0.0"
     for line in output.lines() {
         let line = line.trim();
@@ -539,7 +521,6 @@ fn parse_version_from_output(output: &str) -> Option<String> {
                     .unwrap_or(false)
                     && clean_word.contains('.')
                 {
-                    println!("✅ Found version: {}", clean_word);
                     return Some(clean_word.to_string());
                 }
             }
@@ -555,13 +536,11 @@ fn parse_version_from_output(output: &str) -> Option<String> {
                 .unwrap_or(false)
                 && version_part.contains('.')
             {
-                println!("✅ Found standalone version: {}", version_part);
                 return Some(version_part.to_string());
             }
         }
     }
 
-    println!("❌ No version found in output");
     None
 }
 
@@ -575,28 +554,10 @@ fn set_executable_permissions(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Log detailed GitHub failure information
+/// Log GitHub failure information
 fn log_github_failure(error: &anyhow::Error) {
-    println!("❌ GitHub download failed:");
-
-    // Show error chain
-    let error_chain: Vec<_> = error.chain().collect();
-    for (i, cause) in error_chain.iter().enumerate() {
-        if i == 0 {
-            println!("   Error: {}", cause);
-        } else {
-            println!("   Caused by: {}", cause);
-        }
-    }
-
-    println!("   URLs attempted:");
-    println!("     • https://api.github.com/repos/mdmcp/mdmcp/releases/latest");
-    println!("   💡 This could be due to:");
-    println!("     • Network connectivity issues");
-    println!("     • GitHub API rate limiting");
-    println!("     • Repository access restrictions");
-    println!("     • No releases available for your platform");
-    println!();
+    println!("❌ GitHub download failed: {}", error);
+    println!("   URL: https://api.github.com/repos/mdmcp/mdmcp/releases/latest");
 }
 
 /// Prompt user for confirmation

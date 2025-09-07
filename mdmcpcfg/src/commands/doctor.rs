@@ -146,7 +146,7 @@ async fn check_policy(issues: &mut Vec<String>, warnings: &mut Vec<String>) -> R
     println!("   ✅ Policy file has valid YAML syntax");
 
     // Basic structure validation
-    let required_fields = ["version", "allowedRoots", "commands"];
+    let required_fields = ["version", "allowed_roots", "commands"];
     for field in &required_fields {
         if policy.get(field).is_none() {
             issues.push(format!("Policy file missing required field: {}", field));
@@ -155,7 +155,7 @@ async fn check_policy(issues: &mut Vec<String>, warnings: &mut Vec<String>) -> R
     }
 
     // Check allowed roots exist
-    if let Some(roots) = policy.get("allowedRoots").and_then(|r| r.as_sequence()) {
+    if let Some(roots) = policy.get("allowed_roots").and_then(|r| r.as_sequence()) {
         println!("   ℹ️  Checking {} allowed roots...", roots.len());
         let mut accessible_count = 0;
 

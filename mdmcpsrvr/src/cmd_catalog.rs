@@ -86,9 +86,13 @@ impl CommandCatalog {
         // Use command timeout if not specified in request
         let timeout_ms = params.timeout_ms.unwrap_or(command.rule.timeout_ms);
 
+        // Combine fixed args with user args for execution
+        let mut final_args = command.rule.args.fixed.clone();
+        final_args.extend(params.args.clone());
+
         Ok(ValidatedCommand {
             command: command.clone(),
-            args: params.args.clone(),
+            args: final_args,
             cwd: validated_cwd,
             env: filtered_env,
             stdin: params.stdin.clone(),
@@ -299,7 +303,7 @@ mod tests {
             commands: vec![CommandRule {
                 id: "echo".to_string(),
                 exec: if cfg!(windows) {
-                    "cmd".to_string()
+                    "C:/Windows/System32/cmd.exe".to_string()
                 } else {
                     "/bin/echo".to_string()
                 },
@@ -320,6 +324,7 @@ mod tests {
                     "windows".to_string(),
                     "macos".to_string(),
                 ],
+                allow_any_args: false,
             }],
             logging: LoggingConfig::default(),
             limits: LimitsConfig::default(),

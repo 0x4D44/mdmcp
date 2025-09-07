@@ -59,6 +59,7 @@ pub fn parse_message(line: &str) -> Result<RpcMessage> {
 }
 
 /// Parse a JSON-RPC request from a line of input (legacy function for compatibility)
+#[cfg(test)]
 pub fn parse_request(line: &str) -> Result<RpcRequest> {
     match parse_message(line)? {
         RpcMessage::Request(req) => Ok(req),
@@ -71,6 +72,13 @@ pub fn parse_request(line: &str) -> Result<RpcRequest> {
 /// Send a JSON-RPC response to stdout
 pub async fn send_response(response: &RpcResponse) -> Result<()> {
     let json = serde_json::to_string(response).context("Failed to serialize response")?;
+    
+    // Log the response being sent (with emoji for visibility in logs)
+    if response.error.is_some() {
+        tracing::info!("❌ Sending error response (id={:?}): {}", response.id, json);
+    } else {
+        tracing::info!("✅ Sending success response (id={:?}): {}", response.id, json);
+    }
 
     send_json_line(&json).await
 }
@@ -133,7 +141,9 @@ pub fn create_error_response(
 /// Validate method name against MCP specification
 pub fn validate_method(method: &str) -> Result<(), McpErrorCode> {
     match method {
-        "initialize" | "tools/list" | "tools/call" => Ok(()),
+        "initialize" | "tools/list" | "tools/call" 
+        | "prompts/list" | "prompts/get"
+        | "resources/list" | "resources/read" => Ok(()),
         _ => {
             warn!("Unsupported method: {}", method);
             Err(McpErrorCode::InvalidArgs)

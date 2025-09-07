@@ -8,8 +8,9 @@
 use anyhow::{Context, Result};
 use mdmcp_policy::CompiledPolicy;
 use sha2::{Digest, Sha256};
-use std::fs::{File, OpenOptions};
-use std::io::{Read, Write};
+use cap_std::fs::{Dir, File, OpenOptions};
+use cap_std::ambient_authority;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 use tracing::{debug, warn};
@@ -45,13 +46,12 @@ impl GuardedFileReader {
             path: path.display().to_string(),
         })?;
 
-        // Check if path is within allowed roots
-        if !policy.is_path_allowed(&canonical).map_err(|e| {
-            FsError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                e.to_string(),
-            ))
-        })? {
+        // Resolve to allowed root (prefix check)
+        if !policy
+            .allowed_roots_canonical
+            .iter()
+            .any(|root| canonical.starts_with(root))
+        {
             return Err(FsError::PathNotAllowed {
                 path: canonical.display().to_string(),
             });
@@ -66,12 +66,25 @@ impl GuardedFileReader {
 
         // Check if it's a special file
         if is_special_file(&canonical)? {
+            let file_type = get_file_type_description(&canonical);
             return Err(FsError::SpecialFile {
-                path: canonical.display().to_string(),
+                path: format!("{} ({})", canonical.display(), file_type),
             });
         }
 
-        let file = File::open(&canonical)?;
+        // Open via capability handle bound to the file's parent directory
+        let parent = canonical
+            .parent()
+            .ok_or_else(|| FsError::PathNotAllowed {
+                path: canonical.display().to_string(),
+            })?;
+        let file_name = canonical
+            .file_name()
+            .ok_or_else(|| FsError::PathNotAllowed {
+                path: canonical.display().to_string(),
+            })?;
+        let dir = Dir::open_ambient_dir(parent, ambient_authority()).map_err(FsError::Io)?;
+        let file = dir.open(file_name).map_err(FsError::Io)?;
 
         Ok(GuardedFileReader {
             file,
@@ -111,7 +124,9 @@ impl GuardedFileReader {
 
 /// Safe file writer with policy enforcement
 pub struct GuardedFileWriter {
-    temp_path: PathBuf,
+    dir: Dir,
+    temp_name: PathBuf,
+    final_name: PathBuf,
     final_path: PathBuf,
     max_bytes: u64,
 }
@@ -127,27 +142,22 @@ impl GuardedFileWriter {
         let path = path.as_ref();
         let canonical = canonicalize_path_for_write(path, create)?;
 
-        // Check if path is within allowed roots
-        if !policy.is_path_allowed(&canonical).map_err(|e| {
-            FsError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                e.to_string(),
-            ))
-        })? {
-            return Err(FsError::PathNotAllowed {
-                path: canonical.display().to_string(),
-            });
-        }
+        // Path allowance will be checked via write rules below
 
-        // Find applicable write rule
+        // Find applicable write rule using parent directory path (string-based match)
+        let parent = canonical.parent().ok_or_else(|| FsError::PathNotAllowed {
+            path: canonical.display().to_string(),
+        })?;
         let write_rule = policy
-            .find_write_rule(&canonical)
-            .map_err(|e| {
-                FsError::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    e.to_string(),
-                ))
-            })?
+            .write_rules_canonical
+            .iter()
+            .find(|rule| {
+                if rule.recursive {
+                    parent.starts_with(&rule.path_canonical)
+                } else {
+                    parent == &rule.path_canonical
+                }
+            })
             .ok_or_else(|| FsError::WriteNotPermitted {
                 path: canonical.display().to_string(),
             })?;
@@ -175,25 +185,30 @@ impl GuardedFileWriter {
             });
         }
 
-        // Create parent directories if needed and allowed
-        if let Some(parent) = canonical.parent() {
-            if !parent.exists() && write_rule.create_if_missing {
-                std::fs::create_dir_all(parent)?;
-            }
+        // Path allowance is implied by the write rule match above
+
+        // Ensure parent directory exists if allowed by write rule
+        if !parent.exists() && write_rule.create_if_missing {
+            std::fs::create_dir_all(parent).map_err(FsError::Io)?;
         }
 
-        // Create temporary file for atomic write
-        let temp_path = canonical.with_extension(format!(
-            "{}.tmp.{}",
-            canonical
-                .extension()
-                .and_then(|s| s.to_str())
-                .unwrap_or("tmp"),
-            std::process::id()
-        ));
+        // Create temporary relative path for atomic write
+        let file_name = canonical
+            .file_name()
+            .ok_or_else(|| FsError::PathNotAllowed {
+                path: canonical.display().to_string(),
+            })?;
+        let stem = file_name
+            .to_str()
+            .unwrap_or("tmp");
+        let temp_name = PathBuf::from(format!("{}.tmp.{}", stem, std::process::id()));
+
+        let dir = Dir::open_ambient_dir(parent, ambient_authority()).map_err(FsError::Io)?;
 
         Ok(GuardedFileWriter {
-            temp_path,
+            dir,
+            temp_name,
+            final_name: PathBuf::from(file_name),
             final_path: canonical,
             max_bytes: write_rule.max_file_bytes,
         })
@@ -210,18 +225,18 @@ impl GuardedFileWriter {
 
         // Write to temporary file
         {
-            let mut temp_file = OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(&self.temp_path)?;
-
+            let mut opts = OpenOptions::new();
+            opts.create(true).write(true).truncate(true);
+            let mut temp_file = self.dir.open_with(&self.temp_name, &opts).map_err(FsError::Io)?;
+            use std::io::Write as _;
             temp_file.write_all(data)?;
             temp_file.sync_all()?;
         }
 
-        // Atomic rename
-        std::fs::rename(&self.temp_path, &self.final_path)?;
+        // Atomic rename within the same directory using capability handle
+        self.dir
+            .rename(&self.temp_name, &self.dir, &self.final_name)
+            .map_err(FsError::Io)?;
 
         // Set restrictive permissions
         set_secure_permissions(&self.final_path)?;
@@ -244,11 +259,11 @@ impl GuardedFileWriter {
 impl Drop for GuardedFileWriter {
     fn drop(&mut self) {
         // Clean up temp file if it still exists
-        if self.temp_path.exists() {
-            if let Err(e) = std::fs::remove_file(&self.temp_path) {
+        if self.dir.open(&self.temp_name).is_ok() {
+            if let Err(e) = self.dir.remove_file(&self.temp_name) {
                 warn!(
                     "Failed to clean up temp file {}: {}",
-                    self.temp_path.display(),
+                    self.temp_name.display(),
                     e
                 );
             }
@@ -258,13 +273,12 @@ impl Drop for GuardedFileWriter {
 
 /// Canonicalize path, handling the case where the path might not exist
 fn canonicalize_path(path: &Path) -> Result<PathBuf> {
-    if let Ok(canonical) = path.canonicalize() {
+    if let Ok(canonical) = dunce::canonicalize(path) {
         Ok(canonical)
     } else {
         // Path might not exist, try to canonicalize the parent
         if let Some(parent) = path.parent() {
-            let parent_canonical = parent
-                .canonicalize()
+            let parent_canonical = dunce::canonicalize(parent)
                 .context("Parent directory does not exist")?;
             let filename = path
                 .file_name()
@@ -282,30 +296,44 @@ fn canonicalize_path(path: &Path) -> Result<PathBuf> {
 /// Canonicalize path for write operations, handling non-existent files
 fn canonicalize_path_for_write(path: &Path, create: bool) -> Result<PathBuf, FsError> {
     if path.exists() {
-        path.canonicalize().map_err(FsError::Io)
-    } else if create {
-        // For non-existent files that we're allowed to create,
-        // canonicalize the parent directory
-        if let Some(parent) = path.parent() {
-            let parent_canonical = parent.canonicalize().map_err(|_| FsError::PathNotAllowed {
-                path: path.display().to_string(),
-            })?;
-            let filename = path.file_name().ok_or_else(|| FsError::PathNotAllowed {
-                path: path.display().to_string(),
-            })?;
-            Ok(parent_canonical.join(filename))
-        } else {
-            Err(FsError::PathNotAllowed {
-                path: path.display().to_string(),
-            })
-        }
-    } else {
-        Err(FsError::Io(std::io::Error::new(
+        return dunce::canonicalize(path).map_err(FsError::Io);
+    }
+    if !create {
+        return Err(FsError::Io(std::io::Error::new(
             std::io::ErrorKind::NotFound,
             "File does not exist",
-        )))
+        )));
     }
+
+    // Walk up to find the nearest existing ancestor
+    let mut components = Vec::<PathBuf>::new();
+    let mut cursor = path;
+    loop {
+        if cursor.exists() {
+            break;
+        }
+        if let Some(parent) = cursor.parent() {
+            if let Some(name) = cursor.file_name() {
+                components.push(PathBuf::from(name));
+            }
+            cursor = parent;
+        } else {
+            // No existing ancestor; bail
+            return Err(FsError::PathNotAllowed {
+                path: path.display().to_string(),
+            });
+        }
+    }
+
+    // Canonicalize the existing ancestor and rejoin the non-existent suffix
+    let mut canonical = dunce::canonicalize(cursor).map_err(FsError::Io)?;
+    for part in components.iter().rev() {
+        canonical.push(part);
+    }
+    Ok(canonical)
 }
+
+// (removed) resolve_root_and_rel no longer used
 
 /// Check if path points to a special file (not a regular file)
 fn is_special_file(path: &Path) -> Result<bool, FsError> {
@@ -315,13 +343,22 @@ fn is_special_file(path: &Path) -> Result<bool, FsError> {
     Ok(!file_type.is_file())
 }
 
+/// Get a user-friendly description of what type of file this is
+fn get_file_type_description(path: &Path) -> String {
+    if let Ok(metadata) = std::fs::symlink_metadata(path) {
+        let file_type = metadata.file_type();
+        if file_type.is_dir() {
+            return "directory".to_string();
+        } else if file_type.is_symlink() {
+            return "symbolic link".to_string();
+        }
+    }
+    "special file".to_string()
+}
+
 /// Platform-specific network filesystem detection
 #[cfg(target_os = "linux")]
 fn is_network_fs(path: &Path) -> Result<bool, FsError> {
-    use std::ffi::CStr;
-    use std::mem;
-    use std::os::unix::ffi::OsStrExt;
-
     // Try to read /proc/mounts to detect network filesystems
     let mounts = std::fs::read_to_string("/proc/mounts").unwrap_or_default();
     let path_str = path.to_string_lossy();
@@ -389,8 +426,8 @@ fn is_network_fs(path: &Path) -> Result<bool, FsError> {
 
     let path_str = path.to_string_lossy();
 
-    // Check for UNC paths
-    if path_str.starts_with("\\\\") {
+    // Check for UNC paths (but not Windows long path format \\?\)
+    if path_str.starts_with("\\\\") && !path_str.starts_with("\\\\?\\") {
         return Ok(true);
     }
 

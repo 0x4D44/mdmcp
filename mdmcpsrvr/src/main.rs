@@ -49,53 +49,54 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    eprintln!("DEBUG: Starting main function");
-    
     // Set up panic handler to catch crashes
     std::panic::set_hook(Box::new(|panic_info| {
         eprintln!("PANIC: Server crashed: {:?}", panic_info);
     }));
     let cli = Cli::parse();
-    eprintln!("DEBUG: Parsed CLI arguments");
 
     // Initialize logging
     init_logging(&cli.log_level)?;
-    eprintln!("DEBUG: Initialized logging");
 
     info!("Starting mdmcpsrvr v{}", env!("CARGO_PKG_VERSION"));
-    eprintln!("DEBUG: Logged startup message");
 
     // Load and compile policy
     let config_path = cli.config.context("Configuration file path is required")?;
-    eprintln!("DEBUG: Got config path: {:?}", config_path);
-    
     let policy = load_policy(&config_path).await?;
-    eprintln!("DEBUG: Loaded and compiled policy");
     
-    info!(
-        "Loaded policy with {} allowed roots, {} commands, hash: {}",
-        policy.allowed_roots_canonical.len(),
-        policy.commands_by_id.len(),
-        &policy.policy_hash[..8]
-    );
+    // Log policy summary with detailed allowed directories and commands
+    info!("Loaded policy hash: {}", &policy.policy_hash[..16]);
+    
+    info!("Allowed directories ({} total):", policy.allowed_roots_canonical.len());
+    for (i, root) in policy.allowed_roots_canonical.iter().enumerate().take(10) {
+        info!("  {} - {}", i + 1, root.display());
+    }
+    if policy.allowed_roots_canonical.len() > 10 {
+        info!("  ... and {} more directories", policy.allowed_roots_canonical.len() - 10);
+    }
+    
+    info!("Available commands ({} total):", policy.commands_by_id.len());
+    for (i, (cmd_id, cmd_rule)) in policy.commands_by_id.iter().enumerate().take(10) {
+        info!("  {} - '{}' -> {}", i + 1, cmd_id, cmd_rule.rule.exec);
+        if !cmd_rule.rule.args.allow.is_empty() {
+            info!("      allowed args: {:?}", cmd_rule.rule.args.allow);
+        }
+    }
+    if policy.commands_by_id.len() > 10 {
+        info!("  ... and {} more commands", policy.commands_by_id.len() - 10);
+    }
 
     // Create server instance
-    eprintln!("DEBUG: About to create server instance");
     let server = server::Server::new(Arc::new(policy)).await?;
-    eprintln!("DEBUG: Created server instance");
 
     if cli.stdio {
-        eprintln!("DEBUG: About to run stdio server");
-        let result = run_stdio_server(server).await;
-        eprintln!("DEBUG: Stdio server returned: {:?}", result);
-        result?;
+        run_stdio_server(server).await?;
     } else {
         return Err(anyhow::anyhow!(
             "Only stdio transport is currently supported"
         ));
     }
 
-    eprintln!("DEBUG: Main function completing normally");
     Ok(())
 }
 
@@ -107,66 +108,46 @@ async fn load_policy(path: &PathBuf) -> Result<CompiledPolicy> {
 }
 
 async fn run_stdio_server(server: server::Server) -> Result<()> {
-    info!("Starting stdio transport");
-    eprintln!("DEBUG: Starting stdio transport");
+    info!("Starting stdio transport - ready for MCP requests");
 
     let stdin = io::stdin();
-    eprintln!("DEBUG: Got stdin handle");
-    
     let mut reader = BufReader::new(stdin);
-    eprintln!("DEBUG: Created BufReader");
-    
     let mut line = String::new();
-    eprintln!("DEBUG: About to enter main loop");
 
     loop {
         line.clear();
         debug!("Waiting for next line from stdin...");
-        eprintln!("DEBUG: About to read line from stdin");
         
         // Add a small delay to let any pending output flush
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        eprintln!("DEBUG: About to call read_line");
         
         match reader.read_line(&mut line).await {
             Ok(0) => {
-                info!("EOF received from stdin, shutting down gracefully");
-                eprintln!("DEBUG: EOF received from stdin - client closed connection");
+                info!("Client disconnected - shutting down gracefully");
                 break;
             }
-            Ok(n) => {
-                eprintln!("DEBUG: Successfully read {} bytes", n);
+            Ok(_) => {
                 let line = line.trim();
-                debug!("Read {} bytes from stdin: '{}'", n, line);
-                eprintln!("DEBUG: Line content: '{}'", line);
+                debug!("Processing request: {}", line);
                 
                 if line.is_empty() {
                     debug!("Received empty line, continuing...");
-                    eprintln!("DEBUG: Empty line, continuing");
                     continue;
                 }
 
-                debug!("Processing request: {}", line);
-                eprintln!("DEBUG: About to process message: {}", line);
                 if let Err(e) = server.handle_request_line(line).await {
                     error!("Error handling request: {}", e);
-                    eprintln!("Server error handling request: {}", e);
-                } else {
-                    eprintln!("DEBUG: Message processed successfully");
                 }
                 debug!("Request processed successfully");
             }
             Err(e) => {
                 error!("Error reading from stdin: {}", e);
-                eprintln!("Server shutting down: Error reading from stdin: {}", e);
                 break;
             }
         }
     }
 
-    info!("Server main loop ended, exiting");
-    eprintln!("Server main loop ended, process exiting");
-
+    info!("Server shutdown complete");
     Ok(())
 }
 
@@ -176,10 +157,40 @@ fn init_logging(level: &str) -> Result<()> {
 
     tracing_subscriber::fmt()
         .with_target(false)
-        .without_time() // stdio mode doesn't need timestamps
+        .with_ansi(false) // Disable ANSI color codes
         .with_writer(std::io::stderr)
         .with_env_filter(filter)
+        .event_format(CustomFormatter)
         .init();
 
     Ok(())
+}
+
+struct CustomFormatter;
+
+impl<S, N> tracing_subscriber::fmt::FormatEvent<S, N> for CustomFormatter
+where
+    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+    N: for<'a> tracing_subscriber::fmt::FormatFields<'a> + 'static,
+{
+    fn format_event(
+        &self,
+        ctx: &tracing_subscriber::fmt::FmtContext<'_, S, N>,
+        mut writer: tracing_subscriber::fmt::format::Writer<'_>,
+        event: &tracing::Event<'_>,
+    ) -> std::fmt::Result {
+        use std::process;
+        use chrono::Utc;
+        
+        let timestamp = Utc::now().format("%Y-%m-%d:%H:%M:%S%.3f");
+        let pid = process::id();
+        let _level = event.metadata().level();
+        
+        write!(writer, "{}-MDMCPsrvr-{}: ", timestamp, pid)?;
+        
+        // Format the message
+        ctx.field_format().format_fields(writer.by_ref(), event)?;
+        
+        writeln!(writer)
+    }
 }

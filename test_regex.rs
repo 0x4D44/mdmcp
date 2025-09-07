@@ -1,0 +1,1 @@
+use regex::Regex; fn main() { let re = Regex::new(r"^[A-Za-z]:[/\\].*$").unwrap(); println\!("C:\Users matches: {}", re.is_match("C:\Users")); println\!("C:/Users matches: {}", re.is_match("C:/Users")); }

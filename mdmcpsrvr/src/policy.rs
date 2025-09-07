@@ -258,22 +258,30 @@ mod tests {
     async fn test_policy_loading() {
         // Create a temporary policy file
         let temp_file = NamedTempFile::new().unwrap();
-        let policy_content = r#"
-version: 1
-denyNetworkFS: true
-allowedRoots:
-  - "/tmp/test"
-writeRules:
-  - path: "/tmp/test/output"
+        let tmp_root = tempdir().unwrap();
+        let root_path = tmp_root.path().to_path_buf();
+        let _persisted = tmp_root.keep();
+        let out_path = root_path.join("output");
+        std::fs::create_dir_all(&out_path).unwrap();
+        let policy_content = format!(
+            r#"version: 1
+deny_network_fs: true
+allowed_roots:
+  - "{}"
+write_rules:
+  - path: "{}"
     recursive: true
-    maxFileBytes: 1000000
+    max_file_bytes: 1000000
 commands:
   - id: "echo"
     exec: "/bin/echo"
     args:
       allow: ["hello"]
     platform: ["linux"]
-"#;
+"#,
+            root_path.display(),
+            out_path.display()
+        );
         std::fs::write(temp_file.path(), policy_content).unwrap();
 
         // Load the policy
@@ -321,6 +329,7 @@ commands:
                 timeout_ms: 5000,
                 max_output_bytes: 1000000,
                 platform: vec!["linux".to_string()],
+                allow_any_args: false,
             }],
             logging: LoggingConfig::default(),
             limits: LimitsConfig::default(),
