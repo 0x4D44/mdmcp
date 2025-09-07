@@ -10,6 +10,10 @@ use tempfile::NamedTempFile;
 
 use crate::io::{is_executable, write_file, ClaudeDesktopConfig, Paths};
 
+// GitHub repository for releases
+const GITHUB_RELEASES_LATEST: &str = "https://api.github.com/repos/0x4D44/mdmcp/releases/latest";
+const GITHUB_RELEASES: &str = "https://api.github.com/repos/0x4D44/mdmcp/releases";
+
 /// GitHub release information
 #[derive(Debug, Deserialize)]
 struct GitHubRelease {
@@ -570,7 +574,7 @@ fn set_executable_permissions(path: &Path) -> Result<()> {
 /// Log GitHub failure information
 fn log_github_failure(error: &anyhow::Error) {
     println!("✖ GitHub download failed: {}", error);
-    println!("   URL: https://api.github.com/repos/mdmcp/mdmcp/releases/latest");
+    println!("   URL: {}", GITHUB_RELEASES_LATEST);
 }
 
 /// Prompt user for confirmation
@@ -683,7 +687,7 @@ fn setup_paths(dest_dir: Option<String>) -> Result<Paths> {
 
 /// Fetch the latest stable release from GitHub
 async fn fetch_latest_release() -> Result<GitHubRelease> {
-    let url = "https://api.github.com/repos/mdmcp/mdmcp/releases/latest";
+    let url = GITHUB_RELEASES_LATEST;
     let client = reqwest::Client::new();
 
     let response = client
@@ -709,7 +713,7 @@ async fn fetch_latest_release() -> Result<GitHubRelease> {
 
 /// Fetch the latest prerelease from GitHub
 async fn fetch_latest_prerelease() -> Result<GitHubRelease> {
-    let url = "https://api.github.com/repos/mdmcp/mdmcp/releases";
+    let url = GITHUB_RELEASES;
     let client = reqwest::Client::new();
 
     let response = client

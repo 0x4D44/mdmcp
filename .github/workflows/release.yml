@@ -7,19 +7,61 @@ on:
   workflow_dispatch:
 
 jobs:
-  create-release:
-    name: Create GitHub Release
-    runs-on: ubuntu-22.04
-    permissions:
-      contents: write
+  build-windows:
+    name: Build Windows binaries
+    runs-on: windows-2022
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Ensure tag context
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binaries
         run: |
-          echo "Ref: $GITHUB_REF"
-          echo "Tag: ${GITHUB_REF#refs/tags/}"
+          cargo build --release -p mdmcpsrvr -p mdmcpcfg
+
+      - name: Prepare dist folder
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target\release\mdmcpsrvr.exe dist\mdmcpsrvr-x86_64-windows.exe
+          Copy-Item target\release\mdmcpcfg.exe  dist\mdmcpcfg-x86_64-windows.exe
+          Get-ChildItem dist
+
+      - name: Generate checksums
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem dist\*.exe
+          $out = @()
+          foreach ($f in $files) {
+            $h = Get-FileHash $f.FullName -Algorithm SHA256
+            $out += ("{0}  {1}" -f $h.Hash.ToLower(), $f.Name)
+          }
+          $out -join "`n" | Out-File -NoNewline dist\SHA256SUMS.txt -Encoding ASCII
+          Get-Content dist\SHA256SUMS.txt
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-dist
+          path: dist/*
+
+  create-release:
+    name: Create GitHub Release
+    needs: build-windows
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download Windows artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-dist
+          path: dist
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -28,5 +70,7 @@ jobs:
           prerelease: false
           generate_release_notes: true
           tag_name: ${{ github.ref_name }}
+          files: |
+            dist/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
