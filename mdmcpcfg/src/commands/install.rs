@@ -206,10 +206,20 @@ pub async fn update(channel: String, rollback: bool, force: bool) -> Result<()> 
 
     let choice = prompt_source_choice(github.is_some(), local_info.is_some())?;
     match choice {
-        Some('G') => update_from_github(channel, &paths, force).await,
+        Some('G') => {
+            if !prompt_named_confirmation("Proceed with GitHub update? [Y/n]: ")? {
+                println!("✖ Update cancelled.");
+                return Ok(());
+            }
+            update_from_github(channel, &paths, force, true).await
+        }
         Some('L') => {
+            if !prompt_named_confirmation("Proceed with Local update? [Y/n]: ")? {
+                println!("✖ Update cancelled.");
+                return Ok(());
+            }
             let (bin, _) = local_info.expect("local info should exist");
-            update_from_local_binary(&paths, &bin, force).await
+            update_from_local_binary(&paths, &bin, force, true).await
         }
         _ => {
             println!("✖ Update cancelled by user.");
@@ -219,7 +229,8 @@ pub async fn update(channel: String, rollback: bool, force: bool) -> Result<()> 
 }
 
 /// Update from GitHub (extracted from original update logic)
-async fn update_from_github(channel: String, paths: &Paths, force: bool) -> Result<()> {
+/// If `preconfirmed` is true, skip interactive prompts and extra version prints
+async fn update_from_github(channel: String, paths: &Paths, force: bool, preconfirmed: bool) -> Result<()> {
     // Fetch latest release
     let release = if channel == "stable" {
         fetch_latest_release().await?
@@ -229,20 +240,23 @@ async fn update_from_github(channel: String, paths: &Paths, force: bool) -> Resu
 
     // Check current version and compare
     if let Some(current_info) = InstallationInfo::load(paths)? {
-        println!("ℹ️ Current installed version: {}", current_info.version);
-        println!("📦 Available version: {}", release.tag_name);
+        if !preconfirmed {
+            println!("ℹ️ Current installed version: {}", current_info.version);
+            println!("📦 Available version: {}", release.tag_name);
+        }
 
         if current_info.version == release.tag_name && !force {
             println!("✔ Already up to date!");
             return Ok(());
         }
 
-        if force {
+        if force && !preconfirmed {
             println!(
                 "⚠️  Force updating to version {} (reinstall)",
                 release.tag_name
             );
-        } else {
+        }
+        if !preconfirmed && !force {
             // Ask for confirmation
             println!("❓ Update to version {}?", release.tag_name);
             if !prompt_user_confirmation()? {
@@ -250,7 +264,7 @@ async fn update_from_github(channel: String, paths: &Paths, force: bool) -> Resu
                 return Ok(());
             }
         }
-    } else {
+    } else if !preconfirmed {
         println!("📦 Installing version: {}", release.tag_name);
     }
 
@@ -277,7 +291,8 @@ async fn update_from_github(channel: String, paths: &Paths, force: bool) -> Resu
 }
 
 /// Update from local binary
-async fn update_from_local_binary(paths: &Paths, source_binary: &Path, force: bool) -> Result<()> {
+/// Update from local binary; if `preconfirmed` is true, skip extra prints
+async fn update_from_local_binary(paths: &Paths, source_binary: &Path, force: bool, preconfirmed: bool) -> Result<()> {
     println!("📂 Updating from local binary: {}", source_binary.display());
 
     // Validate local binary
@@ -301,17 +316,21 @@ async fn update_from_local_binary(paths: &Paths, source_binary: &Path, force: bo
         let current_version = &current_info.version;
         let new_version_tag = format!("{} (local)", version);
 
-        println!("ℹ️ Current installed version: {}", current_version);
-        println!("📦 Available version: {}", new_version_tag);
+        if !preconfirmed {
+            println!("ℹ️ Current installed version: {}", current_version);
+            println!("📦 Available version: {}", new_version_tag);
+        }
 
         // Try to get actual version of currently installed binary for better comparison
         let current_binary = paths.server_binary();
         if current_binary.exists() {
             if let Ok(actual_current_version) = test_local_binary_version(&current_binary).await {
-                println!(
-                    "🔎 Current binary reports version: {}",
-                    actual_current_version
-                );
+                if !preconfirmed {
+                    println!(
+                        "🔎 Current binary reports version: {}",
+                        actual_current_version
+                    );
+                }
 
                 // Compare the actual running versions, not just the stored metadata
                 if actual_current_version == version && version != "local" && !force {
@@ -597,6 +616,17 @@ fn prompt_user_confirmation() -> Result<bool> {
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;
 
+    let response = input.trim().to_lowercase();
+    Ok(response.is_empty() || response.starts_with('y'))
+}
+
+/// Prompt with a custom message and yes/no response
+fn prompt_named_confirmation(prompt: &str) -> Result<bool> {
+    use std::io::{self, Write};
+    print!("{}", prompt);
+    io::stdout().flush()?;
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
     let response = input.trim().to_lowercase();
     Ok(response.is_empty() || response.starts_with('y'))
 }
