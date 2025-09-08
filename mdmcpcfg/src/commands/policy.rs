@@ -6,6 +6,7 @@
 use anyhow::{bail, Context, Result};
 use serde_yaml::{Mapping, Value};
 use std::collections::BTreeMap;
+// (no additional imports)
 use std::path::Path;
 
 use crate::io::{read_file, write_file, Paths};
@@ -349,6 +350,121 @@ pub async fn add_command(
     println!("✅ Added command '{}' to policy", id);
     println!("💾 Policy file updated: {}", paths.policy_file.display());
 
+    Ok(())
+}
+
+/// Set static environment variables (env_static) for a command (NAME=VALUE pairs)
+pub async fn set_env(id: String, kv: Vec<String>) -> Result<()> {
+    let paths = Paths::new()?;
+    if !paths.policy_file.exists() {
+        bail!(
+            "Policy file not found: {}. Run 'mdmcpcfg install' first.",
+            paths.policy_file.display()
+        );
+    }
+    let content = read_file(&paths.policy_file)?;
+    let mut policy: Value = serde_yaml::from_str(&content).context("Failed to parse policy file")?;
+
+    let commands = policy
+        .get_mut("commands")
+        .and_then(|v| v.as_sequence_mut())
+        .context("Policy file missing or invalid 'commands' section")?;
+
+    let Some(cmd_val) = commands.iter_mut().find(|cmd| cmd.get("id").and_then(|i| i.as_str()) == Some(id.as_str())) else {
+        bail!("Command ID '{}' not found in policy", id);
+    };
+
+    let cmd_map = cmd_val.as_mapping_mut().context("Command must be a mapping")?;
+    let env_static_key = Value::String("env_static".to_string());
+    let env_map = cmd_map
+        .entry(env_static_key.clone())
+        .or_insert(Value::Mapping(Mapping::new()))
+        .as_mapping_mut()
+        .context("env_static must be a mapping")?;
+
+    for pair in kv {
+        if let Some((k, v)) = pair.split_once('=') {
+            let key = k.trim();
+            let val = v.to_string();
+            env_map.insert(Value::String(key.to_string()), Value::String(val));
+        } else {
+            bail!("Invalid NAME=VALUE pair: {}", pair);
+        }
+    }
+
+    let updated = serde_yaml::to_string(&policy).context("Failed to serialize updated policy")?;
+    write_file(&paths.policy_file, &updated)?;
+    println!("✅ Updated env_static for command '{}'", id);
+    Ok(())
+}
+
+/// Unset static environment variables for a command
+pub async fn unset_env(id: String, names: Vec<String>) -> Result<()> {
+    let paths = Paths::new()?;
+    if !paths.policy_file.exists() {
+        bail!(
+            "Policy file not found: {}. Run 'mdmcpcfg install' first.",
+            paths.policy_file.display()
+        );
+    }
+    let content = read_file(&paths.policy_file)?;
+    let mut policy: Value = serde_yaml::from_str(&content).context("Failed to parse policy file")?;
+
+    let commands = policy
+        .get_mut("commands")
+        .and_then(|v| v.as_sequence_mut())
+        .context("Policy file missing or invalid 'commands' section")?;
+
+    let Some(cmd_val) = commands.iter_mut().find(|cmd| cmd.get("id").and_then(|i| i.as_str()) == Some(id.as_str())) else {
+        bail!("Command ID '{}' not found in policy", id);
+    };
+    let cmd_map = cmd_val.as_mapping_mut().context("Command must be a mapping")?;
+    if let Some(env_node) = cmd_map.get_mut(Value::String("env_static".to_string())) {
+        if let Some(env_map) = env_node.as_mapping_mut() {
+            for n in names {
+                env_map.remove(Value::String(n));
+            }
+        }
+    }
+    let updated = serde_yaml::to_string(&policy).context("Failed to serialize updated policy")?;
+    write_file(&paths.policy_file, &updated)?;
+    println!("✅ Removed env_static entries for '{}'", id);
+    Ok(())
+}
+
+/// List static environment variables for a command
+pub async fn list_env(id: String) -> Result<()> {
+    let paths = Paths::new()?;
+    if !paths.policy_file.exists() {
+        bail!(
+            "Policy file not found: {}. Run 'mdmcpcfg install' first.",
+            paths.policy_file.display()
+        );
+    }
+    let content = read_file(&paths.policy_file)?;
+    let policy: Value = serde_yaml::from_str(&content).context("Failed to parse policy file")?;
+    let commands = policy
+        .get("commands")
+        .and_then(|v| v.as_sequence())
+        .context("Policy file missing or invalid 'commands' section")?;
+    let Some(cmd_val) = commands.iter().find(|cmd| cmd.get("id").and_then(|i| i.as_str()) == Some(id.as_str())) else {
+        bail!("Command ID '{}' not found in policy", id);
+    };
+    let env_map = cmd_val
+        .get("env_static")
+        .and_then(|m| m.as_mapping())
+        .cloned()
+        .unwrap_or_else(Mapping::new);
+    if env_map.is_empty() {
+        println!("(no env_static entries for '{}')", id);
+    } else {
+        println!("env_static for '{}':", id);
+        for (k, v) in env_map {
+            let key = k.as_str().unwrap_or("");
+            let val = v.as_str().unwrap_or("");
+            println!("  {}={}", key, val);
+        }
+    }
     Ok(())
 }
 

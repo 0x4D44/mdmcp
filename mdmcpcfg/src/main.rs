@@ -114,6 +114,27 @@ enum PolicyCommands {
         #[arg(long = "pattern", action = clap::ArgAction::Append)]
         patterns: Vec<String>,
     },
+    /// Set static environment variables for a command (NAME=VALUE)
+    SetEnv {
+        /// Command ID
+        id: String,
+        /// One or more NAME=VALUE pairs
+        #[arg(num_args = 1..)]
+        kv: Vec<String>,
+    },
+    /// Unset static environment variables for a command
+    UnsetEnv {
+        /// Command ID
+        id: String,
+        /// One or more variable names to remove
+        #[arg(num_args = 1..)]
+        names: Vec<String>,
+    },
+    /// List static environment variables for a command
+    ListEnv {
+        /// Command ID
+        id: String,
+    },
 }
 
 #[tokio::main]
@@ -143,6 +164,9 @@ async fn main() -> Result<()> {
                 allow_args,
                 patterns,
             } => policy::add_command(id, exec, allow_args, patterns).await,
+            PolicyCommands::SetEnv { id, kv } => policy::set_env(id, kv).await,
+            PolicyCommands::UnsetEnv { id, names } => policy::unset_env(id, names).await,
+            PolicyCommands::ListEnv { id } => policy::list_env(id).await,
         },
         Commands::Doctor => doctor::run().await,
         Commands::Uninstall {

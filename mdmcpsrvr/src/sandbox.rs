@@ -566,34 +566,49 @@ pub fn filter_environment(
 
     // Add allowed environment variables
     for key in allowlist {
-        // Prefer requested env if provided, but expand Windows-style placeholders.
+        // Prefer requested env if provided; on Windows, match names case-insensitively and expand %VAR% placeholders.
         let mut chosen: Option<String> = None;
-        if let Some(req_val) = requested_env.get(key) {
-            #[cfg(windows)]
+
+        #[cfg(windows)]
+        {
+            if let Some((_, req_v)) = requested_env
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(key))
             {
-                let expanded = expand_windows_placeholders(req_val);
-                if expanded != *req_val {
+                let expanded = expand_windows_placeholders(req_v);
+                if expanded != *req_v {
                     chosen = Some(expanded);
-                } else if req_val == &format!("%{}%", key) {
-                    // Request provided a self-referential placeholder; prefer system value if available
-                    if let Ok(sys_val) = std::env::var(key) {
-                        chosen = Some(sys_val);
+                } else if req_v.trim() == format!("%{}%", key) {
+                    // Self-referential; prefer system value if available
+                    if let Some((_, sys_v)) = std::env::vars()
+                        .find(|(k, _)| k.eq_ignore_ascii_case(key))
+                    {
+                        chosen = Some(sys_v);
                     } else {
-                        chosen = Some(req_val.clone());
+                        chosen = Some(req_v.clone());
                     }
                 } else {
-                    chosen = Some(req_val.clone());
+                    chosen = Some(req_v.clone());
                 }
             }
-            #[cfg(not(windows))]
-            {
-                chosen = Some(req_val.clone());
+
+            if chosen.is_none() {
+                if let Some((_, sys_v)) = std::env::vars()
+                    .find(|(k, _)| k.eq_ignore_ascii_case(key))
+                {
+                    chosen = Some(sys_v);
+                }
             }
+
+            // No implicit fallback between TMP and TEMP; require explicit presence or request env.
         }
 
-        if chosen.is_none() {
-            if let Ok(sys_val) = std::env::var(key) {
-                chosen = Some(sys_val);
+        #[cfg(not(windows))]
+        {
+            if let Some(req_v) = requested_env.get(key) {
+                chosen = Some(req_v.clone());
+            } else if let Ok(sys_v) = std::env::var(key) {
+                chosen = Some(sys_v);
             }
         }
 

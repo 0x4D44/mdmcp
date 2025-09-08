@@ -1043,6 +1043,7 @@ fn create_default_policy_content() -> Result<String> {
             id: "ls".into(),
             exec: "/bin/ls".into(),
             description: None,
+            env_static: std::collections::HashMap::new(),
             args: ArgsPolicy {
                 allow: vec![
                     "-l".into(),
@@ -1065,6 +1066,7 @@ fn create_default_policy_content() -> Result<String> {
             id: "cat".into(),
             exec: "/bin/cat".into(),
             description: None,
+            env_static: std::collections::HashMap::new(),
             args: ArgsPolicy {
                 allow: vec![],
                 fixed: vec![],
@@ -1085,6 +1087,7 @@ fn create_default_policy_content() -> Result<String> {
             id: id.into(),
             exec: "C:/Windows/System32/cmd.exe".into(),
             description: None,
+            env_static: std::collections::HashMap::new(),
             args: ArgsPolicy {
                 allow: vec![],
                 fixed: vec!["/c".into(), sub.into()],
@@ -1113,6 +1116,7 @@ fn create_default_policy_content() -> Result<String> {
             id: id.into(),
             exec: path.into(),
             description: None,
+            env_static: std::collections::HashMap::new(),
             args: ArgsPolicy {
                 allow: vec![],
                 fixed: vec![],

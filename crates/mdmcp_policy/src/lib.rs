@@ -74,6 +74,8 @@ pub struct CommandRule {
     #[serde(default)]
     pub description: Option<String>,
     #[serde(default)]
+    pub env_static: std::collections::HashMap<String, String>,
+    #[serde(default)]
     pub args: ArgsPolicy,
     #[serde(default)]
     pub cwd_policy: CwdPolicy,
@@ -314,6 +316,12 @@ pub fn merge_policies(core: Policy, user: Policy) -> Policy {
         if let Some(core_c) = cmd_map.get(&c.id) {
             if c.description.is_none() && core_c.description.is_some() {
                 c.description = core_c.description.clone();
+            }
+            // Merge env_static with user taking precedence per key
+            if !core_c.env_static.is_empty() {
+                for (k, v) in core_c.env_static.iter() {
+                    c.env_static.entry(k.clone()).or_insert_with(|| v.clone());
+                }
             }
         }
         cmd_map.insert(c.id.clone(), c);
@@ -716,6 +724,7 @@ commands:
                 id: "test".to_string(),
                 exec: "/bin/echo".to_string(),
                 description: None,
+                env_static: std::collections::HashMap::new(),
                 args: ArgsPolicy {
                     allow: vec!["hello".to_string(), "world".to_string()],
                     fixed: vec![],

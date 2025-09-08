@@ -147,8 +147,19 @@ impl CommandCatalog {
         cmd: &CompiledCommand,
         requested_env: &HashMap<String, String>,
     ) -> Result<HashMap<String, String>, CatalogError> {
-        // Filter environment variables using sandbox utility
-        let filtered = sandbox::filter_environment(requested_env, &cmd.rule.env_allowlist);
+        // Start with allowlisted variables (from request or process env)
+        let mut filtered = sandbox::filter_environment(requested_env, &cmd.rule.env_allowlist);
+
+        // Apply env_static from policy with precedence below request env.
+        for (k, v) in cmd.rule.env_static.iter() {
+            #[cfg(windows)]
+            let requested_has_key = requested_env.iter().any(|(rk, _)| rk.eq_ignore_ascii_case(k));
+            #[cfg(not(windows))]
+            let requested_has_key = requested_env.contains_key(k);
+            if !requested_has_key {
+                filtered.insert(k.clone(), v.clone());
+            }
+        }
 
         debug!(
             "Environment filtered: {} -> {} variables",
@@ -416,6 +427,7 @@ mod tests {
                     "/bin/echo".to_string()
                 },
                 description: None,
+                env_static: std::collections::HashMap::new(),
                 args: ArgsPolicy {
                     allow: vec!["hello".to_string(), "world".to_string()],
                     fixed: vec![],

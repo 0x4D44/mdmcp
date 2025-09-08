@@ -324,6 +324,7 @@ commands:
                 id: "test".to_string(),
                 exec: "/bin/test".to_string(),
                 description: None,
+                env_static: std::collections::HashMap::new(),
                 args: ArgsPolicy::default(),
                 cwd_policy: mdmcp_policy::CwdPolicy::WithinRoot,
                 env_allowlist: vec![],

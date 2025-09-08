@@ -60,6 +60,30 @@ async fn main() -> Result<()> {
 
     info!("Starting mdmcpsrvr v{}", env!("CARGO_PKG_VERSION"));
 
+    // Log a summary of the process environment (keys only) to help diagnose env propagation from clients
+    #[cfg(windows)]
+    {
+        let mut keys: Vec<String> = std::env::vars().map(|(k, _)| k).collect();
+        keys.sort_unstable_by(|a, b| a.to_ascii_lowercase().cmp(&b.to_ascii_lowercase()));
+        let total = keys.len();
+        let preview: String = keys
+            .iter()
+            .take(40)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
+        if total > 40 {
+            info!(
+                "Process env keys ({} total): {} … ({} more)",
+                total,
+                preview,
+                total - 40
+            );
+        } else {
+            info!("Process env keys ({} total): {}", total, preview);
+        }
+    }
+
     // Load and compile policy
     let config_path = cli.config.context("Configuration file path is required")?;
     let policy = load_policy(&config_path).await?;

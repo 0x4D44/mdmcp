@@ -1771,6 +1771,7 @@ mod tests {
                     "/bin/echo".to_string()
                 },
                 description: None,
+                env_static: std::collections::HashMap::new(),
                 args: ArgsPolicy {
                     allow: vec!["test".to_string()],
                     fixed: if cfg!(windows) {
