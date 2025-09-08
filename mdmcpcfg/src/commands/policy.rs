@@ -363,18 +363,24 @@ pub async fn set_env(id: String, kv: Vec<String>) -> Result<()> {
         );
     }
     let content = read_file(&paths.policy_file)?;
-    let mut policy: Value = serde_yaml::from_str(&content).context("Failed to parse policy file")?;
+    let mut policy: Value = serde_yaml::from_str(&content)
+        .context("Failed to parse policy file")?;
 
     let commands = policy
         .get_mut("commands")
         .and_then(|v| v.as_sequence_mut())
         .context("Policy file missing or invalid 'commands' section")?;
 
-    let Some(cmd_val) = commands.iter_mut().find(|cmd| cmd.get("id").and_then(|i| i.as_str()) == Some(id.as_str())) else {
+    let Some(cmd_val) = commands
+        .iter_mut()
+        .find(|cmd| cmd.get("id").and_then(|i| i.as_str()) == Some(id.as_str()))
+    else {
         bail!("Command ID '{}' not found in policy", id);
     };
 
-    let cmd_map = cmd_val.as_mapping_mut().context("Command must be a mapping")?;
+    let cmd_map = cmd_val
+        .as_mapping_mut()
+        .context("Command must be a mapping")?;
     let env_static_key = Value::String("env_static".to_string());
     let env_map = cmd_map
         .entry(env_static_key.clone())
@@ -408,17 +414,23 @@ pub async fn unset_env(id: String, names: Vec<String>) -> Result<()> {
         );
     }
     let content = read_file(&paths.policy_file)?;
-    let mut policy: Value = serde_yaml::from_str(&content).context("Failed to parse policy file")?;
+    let mut policy: Value = serde_yaml::from_str(&content)
+        .context("Failed to parse policy file")?;
 
     let commands = policy
         .get_mut("commands")
         .and_then(|v| v.as_sequence_mut())
         .context("Policy file missing or invalid 'commands' section")?;
 
-    let Some(cmd_val) = commands.iter_mut().find(|cmd| cmd.get("id").and_then(|i| i.as_str()) == Some(id.as_str())) else {
+    let Some(cmd_val) = commands
+        .iter_mut()
+        .find(|cmd| cmd.get("id").and_then(|i| i.as_str()) == Some(id.as_str()))
+    else {
         bail!("Command ID '{}' not found in policy", id);
     };
-    let cmd_map = cmd_val.as_mapping_mut().context("Command must be a mapping")?;
+    let cmd_map = cmd_val
+        .as_mapping_mut()
+        .context("Command must be a mapping")?;
     if let Some(env_node) = cmd_map.get_mut(Value::String("env_static".to_string())) {
         if let Some(env_map) = env_node.as_mapping_mut() {
             for n in names {
@@ -447,7 +459,10 @@ pub async fn list_env(id: String) -> Result<()> {
         .get("commands")
         .and_then(|v| v.as_sequence())
         .context("Policy file missing or invalid 'commands' section")?;
-    let Some(cmd_val) = commands.iter().find(|cmd| cmd.get("id").and_then(|i| i.as_str()) == Some(id.as_str())) else {
+    let Some(cmd_val) = commands
+        .iter()
+        .find(|cmd| cmd.get("id").and_then(|i| i.as_str()) == Some(id.as_str()))
+    else {
         bail!("Command ID '{}' not found in policy", id);
     };
     let env_map = cmd_val

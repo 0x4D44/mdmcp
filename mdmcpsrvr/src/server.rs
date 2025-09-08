@@ -300,6 +300,11 @@ impl Server {
                     "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false}
                 },
                 {
+                    "name": "environment_defaults",
+                    "description": "Show the default environment variable names the server passes to child processes",
+                    "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false}
+                },
+                {
                     "name": "Documentation",
                     "description": "Usage guide for mdmcpcfg and mdmcpsrvr: install/update, manage policy (add/remove roots and commands)",
                     "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false}
@@ -710,6 +715,63 @@ impl Server {
                 self.auditor.log_success(ctx, SuccessDetails::default());
                 create_success_response(id, result)
             }
+            "environment_defaults" => {
+                // Describe baseline env keys included by the sandbox (names only, actual values are taken from the process env/request env)
+                #[cfg(windows)]
+                let keys: &[&str] = &[
+                    "PATH",
+                    "SYSTEMROOT",
+                    "WINDIR",
+                    "SYSTEMDRIVE",
+                    "COMSPEC",
+                    "PATHEXT",
+                    "TEMP",
+                    "TMP",
+                    "APPDATA",
+                    "LOCALAPPDATA",
+                    "PROGRAMDATA",
+                    "PROGRAMFILES",
+                    "PROGRAMFILES(X86)",
+                    "PROGRAMW6432",
+                    "COMMONPROGRAMFILES",
+                    "COMMONPROGRAMFILES(X86)",
+                    "USERPROFILE",
+                    "HOME",
+                    "CARGO_HOME",
+                    "RUSTUP_HOME",
+                    "NUMBER_OF_PROCESSORS",
+                    "PROCESSOR_ARCHITECTURE",
+                ];
+                #[cfg(unix)]
+                let keys: &[&str] = &[
+                    "PATH",
+                    "HOME",
+                    "USER",
+                    "SHELL",
+                    "TMPDIR",
+                    "CARGO_HOME",
+                    "RUSTUP_HOME",
+                ];
+
+                let mut text = String::new();
+                text.push_str("Default environment variable names included by the sandbox (names only):\n\n");
+                for k in keys {
+                    text.push_str("  - ");
+                    text.push_str(k);
+                    text.push('\n');
+                }
+                text.push_str("\nNotes:\n");
+                text.push_str("- Only names listed above (plus any allowlisted names) are passed to child processes.\n");
+                text.push_str("- Values are taken from the mdmcpsrvr process environment or the cmd.run request env; nothing is fabricated.\n");
+                text.push_str("- On Windows, PATH is sanitized to avoid GNU link.exe shadowing MSVC.\n");
+
+                let result = serde_json::json!({
+                    "content": [{"type":"text","text": text}],
+                    "isError": false
+                });
+                self.auditor.log_success(ctx, SuccessDetails::default());
+                create_success_response(id, result)
+            }
             "Documentation" | "documentation" => {
                 let policy = { self.policy.read().unwrap().clone() };
                 let version = env!("CARGO_PKG_VERSION");
@@ -743,6 +805,9 @@ mdmcpcfg – Policy and Install CLI
   • Defaults: `cwd_policy: within_root`, `allow_any_args: true`, sane timeouts.
   • Recommendation: add a short `description` to each custom command so clients can explain its purpose.
   • Environment variables: list any required names in `env_allowlist`. Values come from the cmd.run request `env` or the server process environment. With split policy, set/override these in `policy.user.yaml`.
+- Set static env for a command (policy-owned values): `mdmcpcfg policy set-env <id> NAME=VALUE [NAME=VALUE ...]`
+- Remove static env entries: `mdmcpcfg policy unset-env <id> NAME [NAME ...]`
+- List static env entries: `mdmcpcfg policy list-env <id>`
 - Remove a rule or command: use `mdmcpcfg policy edit`, delete the YAML entry, then `mdmcpcfg policy validate`.
 
 Installing and Updating mdmcpsrvr
