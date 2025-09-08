@@ -153,7 +153,9 @@ impl CommandCatalog {
         // Apply env_static from policy with precedence below request env.
         for (k, v) in cmd.rule.env_static.iter() {
             #[cfg(windows)]
-            let requested_has_key = requested_env.iter().any(|(rk, _)| rk.eq_ignore_ascii_case(k));
+            let requested_has_key = requested_env
+                .iter()
+                .any(|(rk, _)| rk.eq_ignore_ascii_case(k));
             #[cfg(not(windows))]
             let requested_has_key = requested_env.contains_key(k);
             if !requested_has_key {

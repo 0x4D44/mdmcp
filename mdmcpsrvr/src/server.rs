@@ -36,6 +36,32 @@ pub struct Server {
     config_path: PathBuf,
 }
 impl Server {
+    /// Build standardized error.data payload with common fields plus extras
+    fn build_error_data(
+        &self,
+        method: &str,
+        id: &RpcId,
+        reason: &str,
+        extra: serde_json::Value,
+    ) -> serde_json::Value {
+        // Capture current policy hash and server version
+        let policy_hash = { self.policy.read().unwrap().policy_hash.clone() };
+        let mut base = serde_json::json!({
+            "method": method,
+            "reason": reason,
+            "requestId": generate_request_id(id),
+            "serverVersion": env!("CARGO_PKG_VERSION"),
+            "policyHash": policy_hash,
+        });
+        if let serde_json::Value::Object(extra_obj) = extra {
+            if let serde_json::Value::Object(ref mut base_obj) = base {
+                for (k, v) in extra_obj {
+                    base_obj.insert(k, v);
+                }
+            }
+        }
+        base
+    }
     /// Create new server instance with compiled policy
     pub async fn new(policy: Arc<CompiledPolicy>, config_path: PathBuf) -> Result<Self> {
         info!("Initializing MCP server");
@@ -89,11 +115,17 @@ impl Server {
                 error!("Failed to parse message: {}", e);
                 eprintln!("Server error: Failed to parse message: {}", e);
                 // Send error response with null ID since we couldn't parse the message
+                let data = self.build_error_data(
+                    "unknown",
+                    &RpcId::Null,
+                    "invalidJson",
+                    serde_json::json!({}),
+                );
                 let response = create_error_response(
                     RpcId::Null,
                     McpErrorCode::InvalidArgs,
                     Some(format!("Invalid JSON-RPC message: {}", e)),
-                    None,
+                    Some(data),
                 );
                 if let Err(send_err) = send_response(&response).await {
                     error!("Failed to send error response: {}", send_err);
@@ -124,11 +156,17 @@ impl Server {
             Err(e) => {
                 self.auditor
                     .log_error(ctx, &format!("Invalid initialize parameters: {}", e), None);
+                let data = self.build_error_data(
+                    "initialize",
+                    &id,
+                    "invalidParameters",
+                    serde_json::json!({}),
+                );
                 return create_error_response(
-                    id,
+                    id.clone(),
                     McpErrorCode::InvalidArgs,
                     Some(format!("Invalid parameters: {}", e)),
-                    None,
+                    Some(data),
                 );
             }
         };
@@ -147,7 +185,20 @@ impl Server {
                 init_params.protocol_version
             );
             self.auditor.log_error(ctx, &error_msg, None);
-            return create_error_response(id, McpErrorCode::InvalidArgs, Some(error_msg), None);
+            let data = self.build_error_data(
+                "initialize",
+                &id,
+                "unsupportedProtocolVersion",
+                serde_json::json!({
+                    "protocolVersion": init_params.protocol_version
+                }),
+            );
+            return create_error_response(
+                id,
+                McpErrorCode::InvalidArgs,
+                Some(error_msg.clone()),
+                Some(data),
+            );
         }
         // Create server capabilities - declare tools for fs.read, fs.write, cmd.run
         let mut tools_caps = HashMap::new();
@@ -322,11 +373,17 @@ impl Server {
             None => {
                 self.auditor
                     .log_error(ctx, "Missing tool name in tools/call", None);
+                let data = self.build_error_data(
+                    "tools/call",
+                    &id,
+                    "invalidParameters",
+                    serde_json::json!({}),
+                );
                 return create_error_response(
-                    id,
+                    id.clone(),
                     McpErrorCode::InvalidArgs,
                     Some("Missing tool name".to_string()),
-                    None,
+                    Some(data),
                 );
             }
         };
@@ -621,7 +678,7 @@ impl Server {
                         content
                             .push_str(&format!("   - Platforms: {:?}\n\n", cmd_rule.rule.platform));
                     }
-                        content
+                    content
                 };
                 // Return proper MCP tools/call response format
                 let result = serde_json::json!({
@@ -754,7 +811,9 @@ impl Server {
                 ];
 
                 let mut text = String::new();
-                text.push_str("Default environment variable names included by the sandbox (names only):\n\n");
+                text.push_str(
+                    "Default environment variable names included by the sandbox (names only):\n\n",
+                );
                 for k in keys {
                     text.push_str("  - ");
                     text.push_str(k);
@@ -763,7 +822,9 @@ impl Server {
                 text.push_str("\nNotes:\n");
                 text.push_str("- Only names listed above (plus any allowlisted names) are passed to child processes.\n");
                 text.push_str("- Values are taken from the mdmcpsrvr process environment or the cmd.run request env; nothing is fabricated.\n");
-                text.push_str("- On Windows, PATH is sanitized to avoid GNU link.exe shadowing MSVC.\n");
+                text.push_str(
+                    "- On Windows, PATH is sanitized to avoid GNU link.exe shadowing MSVC.\n",
+                );
 
                 let result = serde_json::json!({
                     "content": [{"type":"text","text": text}],
@@ -835,6 +896,22 @@ Using the MCP Tools
 - Discoverability:
   • `list_accessible_directories` — shows allowed roots.
   • `list_available_commands` — shows command catalog details (including `description` when set).
+  • On Windows, the default policy includes common system tools. Examples:
+    - `where` (C:/Windows/System32/where.exe)
+    - `findstr` (C:/Windows/System32/findstr.exe)
+    - `tree` (C:/Windows/System32/tree.com)
+    - `tasklist` (C:/Windows/System32/tasklist.exe)
+    - `taskkill` (C:/Windows/System32/taskkill.exe)
+    - `systeminfo` (C:/Windows/System32/systeminfo.exe)
+    - `netstat` (C:/Windows/System32/netstat.exe)
+    - `ping` (C:/Windows/System32/ping.exe)
+    - `ipconfig` (C:/Windows/System32/ipconfig.exe)
+    - `whoami` (C:/Windows/System32/whoami.exe)
+    - `fc` (C:/Windows/System32/fc.exe)
+    - `timeout` (C:/Windows/System32/timeout.exe)
+    - `forfiles` (C:/Windows/System32/forfiles.exe)
+    - `typeperf` (C:/Windows/System32/typeperf.exe)
+  Use `run_command` with `commandId` set to one of the above and supply args as needed.
 - Management:
   • `server_info` — version, build, policy summary, policy format.
   • `reload_policy` — reloads the policy file without restart.
@@ -876,11 +953,19 @@ Notes
             _ => {
                 self.auditor
                     .log_error(ctx, &format!("Unknown tool: {}", tool_name), None);
+                let data = self.build_error_data(
+                    "tools/call",
+                    &id,
+                    "unknownTool",
+                    serde_json::json!({
+                        "tool": tool_name
+                    }),
+                );
                 create_error_response(
-                    id,
+                    id.clone(),
                     McpErrorCode::InvalidArgs,
                     Some(format!("Unknown tool: {}", tool_name)),
-                    None,
+                    Some(data),
                 )
             }
         }
@@ -900,11 +985,17 @@ Notes
                     &format!("Invalid prompts/list parameters: {}", e),
                     None,
                 );
+                let data = self.build_error_data(
+                    "prompts/list",
+                    &id,
+                    "invalidParameters",
+                    serde_json::json!({}),
+                );
                 return create_error_response(
-                    id,
+                    id.clone(),
                     McpErrorCode::InvalidArgs,
                     Some(format!("Invalid parameters: {}", e)),
-                    None,
+                    Some(data),
                 );
             }
         };
@@ -980,10 +1071,15 @@ Notes
                     None,
                 );
                 return create_error_response(
-                    id,
+                    id.clone(),
                     McpErrorCode::InvalidArgs,
                     Some(format!("Invalid parameters: {}", e)),
-                    None,
+                    Some(self.build_error_data(
+                        "prompts/get",
+                        &id,
+                        "invalidParameters",
+                        serde_json::json!({}),
+                    )),
                 );
             }
         };
@@ -1037,7 +1133,19 @@ Notes
             _ => {
                 let error_msg = format!("Unknown prompt: {}", get_params.name);
                 self.auditor.log_error(ctx, &error_msg, None);
-                return create_error_response(id, McpErrorCode::InvalidArgs, Some(error_msg), None);
+                return create_error_response(
+                    id.clone(),
+                    McpErrorCode::InvalidArgs,
+                    Some(error_msg),
+                    Some(self.build_error_data(
+                        "prompts/get",
+                        &id,
+                        "unknownPrompt",
+                        serde_json::json!({
+                            "name": get_params.name
+                        }),
+                    )),
+                );
             }
         };
         let result = PromptsGetResult { messages };
@@ -1064,11 +1172,17 @@ Notes
                     &format!("Invalid resources/list parameters: {}", e),
                     None,
                 );
+                let data = self.build_error_data(
+                    "resources/list",
+                    &id,
+                    "invalidParameters",
+                    serde_json::json!({}),
+                );
                 return create_error_response(
-                    id,
+                    id.clone(),
                     McpErrorCode::InvalidArgs,
                     Some(format!("Invalid parameters: {}", e)),
-                    None,
+                    Some(data),
                 );
             }
         };
@@ -1126,10 +1240,15 @@ Notes
                     None,
                 );
                 return create_error_response(
-                    id,
+                    id.clone(),
                     McpErrorCode::InvalidArgs,
                     Some(format!("Invalid parameters: {}", e)),
-                    None,
+                    Some(self.build_error_data(
+                        "resources/read",
+                        &id,
+                        "invalidParameters",
+                        serde_json::json!({}),
+                    )),
                 );
             }
         };
@@ -1195,7 +1314,19 @@ Notes
             _ => {
                 let error_msg = format!("Unknown resource URI: {}", read_params.uri);
                 self.auditor.log_error(ctx, &error_msg, None);
-                return create_error_response(id, McpErrorCode::InvalidArgs, Some(error_msg), None);
+                return create_error_response(
+                    id.clone(),
+                    McpErrorCode::InvalidArgs,
+                    Some(error_msg),
+                    Some(self.build_error_data(
+                        "resources/read",
+                        &id,
+                        "unknownResource",
+                        serde_json::json!({
+                            "uri": read_params.uri
+                        }),
+                    )),
+                );
             }
         };
         let result = ResourcesReadResult { contents };
@@ -1213,11 +1344,19 @@ Notes
         debug!("Handling request: {} method={}", req_id, request.method);
         // Validate method
         if let Err(error_code) = validate_method(&request.method) {
+            let data = self.build_error_data(
+                &request.method,
+                &request.id,
+                "unsupportedMethod",
+                serde_json::json!({
+                    "method": request.method
+                }),
+            );
             let response = create_error_response(
                 request.id,
                 error_code,
                 Some(format!("Unsupported method: {}", request.method)),
-                None,
+                Some(data),
             );
             if let Err(e) = send_response(&response).await {
                 error!("Failed to send method validation error: {}", e);
@@ -1271,11 +1410,19 @@ Notes
             }
             _ => {
                 // This should not happen due to validate_method above
+                let data = self.build_error_data(
+                    &request.method,
+                    &request.id,
+                    "methodNotImplemented",
+                    serde_json::json!({
+                        "method": request.method
+                    }),
+                );
                 create_error_response(
                     request.id,
                     McpErrorCode::InvalidArgs,
                     Some(format!("Method not implemented: {}", request.method)),
-                    None,
+                    Some(data),
                 )
             }
         };
@@ -1299,7 +1446,7 @@ Notes
                 self.auditor
                     .log_error(ctx, &format!("Invalid fs.read parameters: {}", e), None);
                 return create_error_response(
-                    id,
+                    id.clone(),
                     McpErrorCode::InvalidArgs,
                     Some(format!("Invalid parameters: {}", e)),
                     None,
@@ -1321,7 +1468,20 @@ Notes
                     ..Default::default()
                 }),
             );
-            return create_error_response(id, McpErrorCode::InvalidArgs, Some(error_msg), None);
+            return create_error_response(
+                id.clone(),
+                McpErrorCode::InvalidArgs,
+                Some(error_msg.clone()),
+                Some(self.build_error_data(
+                    "fs.read",
+                    &id,
+                    "invalidEncoding",
+                    serde_json::json!({
+                        "encoding": read_params.encoding,
+                        "detail": "Unsupported encoding"
+                    }),
+                )),
+            );
         }
         // Open file with policy checks
         let policy = { self.policy.read().unwrap().clone() };
@@ -1337,10 +1497,19 @@ Notes
                     }),
                 );
                 return create_error_response(
-                    id,
+                    id.clone(),
                     McpErrorCode::PolicyDeny,
                     Some(format!("Path not allowed: {}", path)),
-                    Some(serde_json::json!({"rule": "pathNotAllowed"})),
+                    Some(self.build_error_data(
+                        "fs.read",
+                        &id,
+                        "policyDenied",
+                        serde_json::json!({
+                            "rule": "pathNotAllowed",
+                            "path": path,
+                            "detail": "Path outside allowed roots"
+                        }),
+                    )),
                 );
             }
             Err(FsError::NetworkFsDenied { path }) => {
@@ -1353,10 +1522,19 @@ Notes
                     }),
                 );
                 return create_error_response(
-                    id,
+                    id.clone(),
                     McpErrorCode::PolicyDeny,
                     Some(format!("Network filesystem access blocked: {}. This policy blocks access to network-mounted filesystems (UNC paths, mapped network drives) for security reasons. To allow network filesystem access, set 'deny_network_fs: false' in your policy configuration.", path)),
-                    Some(serde_json::json!({"rule": "networkFsDenied", "path": path})),
+                    Some(self.build_error_data(
+                        "fs.read",
+                        &id,
+                        "policyDenied",
+                        serde_json::json!({
+                            "rule": "networkFsDenied",
+                            "path": path,
+                            "detail": "Network filesystem denied by policy"
+                        })
+                    )),
                 );
             }
             Err(FsError::SpecialFile { path }) => {
@@ -1377,10 +1555,19 @@ Notes
                     )
                 };
                 return create_error_response(
-                    id,
+                    id.clone(),
                     McpErrorCode::PolicyDeny,
-                    Some(error_msg),
-                    Some(serde_json::json!({"rule": "specialFile", "path": path})),
+                    Some(error_msg.clone()),
+                    Some(self.build_error_data(
+                        "fs.read",
+                        &id,
+                        "policyDenied",
+                        serde_json::json!({
+                            "rule": "specialFile",
+                            "path": path,
+                            "detail": error_msg
+                        }),
+                    )),
                 );
             }
             Err(e) => {
@@ -1393,10 +1580,18 @@ Notes
                     }),
                 );
                 return create_error_response(
-                    id,
+                    id.clone(),
                     McpErrorCode::IoError,
                     Some(format!("File access error: {}", e)),
-                    None,
+                    Some(self.build_error_data(
+                        "fs.read",
+                        &id,
+                        "ioError",
+                        serde_json::json!({
+                            "path": read_params.path,
+                            "detail": "File access error"
+                        }),
+                    )),
                 );
             }
         };
@@ -1416,10 +1611,18 @@ Notes
                                 }),
                             );
                             return create_error_response(
-                                id,
+                                id.clone(),
                                 McpErrorCode::IoError,
                                 Some("File contains invalid UTF-8 data".to_string()),
-                                None,
+                                Some(self.build_error_data(
+                                    "fs.read",
+                                    &id,
+                                    "invalidUtf8",
+                                    serde_json::json!({
+                                        "path": read_params.path,
+                                        "detail": "Invalid UTF-8 data"
+                                    }),
+                                )),
                             );
                         }
                     },
@@ -1452,10 +1655,18 @@ Notes
                     }),
                 );
                 create_error_response(
-                    id,
+                    id.clone(),
                     McpErrorCode::IoError,
                     Some(format!("Read error: {}", e)),
-                    None,
+                    Some(self.build_error_data(
+                        "fs.read",
+                        &id,
+                        "ioError",
+                        serde_json::json!({
+                            "path": read_params.path,
+                            "detail": "Read error"
+                        }),
+                    )),
                 )
             }
         }
@@ -1468,7 +1679,7 @@ Notes
                 self.auditor
                     .log_error(ctx, &format!("Invalid fs.write parameters: {}", e), None);
                 return create_error_response(
-                    id,
+                    id.clone(),
                     McpErrorCode::InvalidArgs,
                     Some(format!("Invalid parameters: {}", e)),
                     None,
@@ -1495,10 +1706,18 @@ Notes
                         }),
                     );
                     return create_error_response(
-                        id,
+                        id.clone(),
                         McpErrorCode::InvalidArgs,
-                        Some(error_msg),
-                        None,
+                        Some(error_msg.clone()),
+                        Some(self.build_error_data(
+                            "fs.write",
+                            &id,
+                            "invalidBase64",
+                            serde_json::json!({
+                                "path": write_params.path,
+                                "detail": "Invalid base64 content"
+                            }),
+                        )),
                     );
                 }
             },
@@ -1512,7 +1731,20 @@ Notes
                         ..Default::default()
                     }),
                 );
-                return create_error_response(id, McpErrorCode::InvalidArgs, Some(error_msg), None);
+                return create_error_response(
+                    id.clone(),
+                    McpErrorCode::InvalidArgs,
+                    Some(error_msg.clone()),
+                    Some(self.build_error_data(
+                        "fs.write",
+                        &id,
+                        "invalidEncoding",
+                        serde_json::json!({
+                            "encoding": write_params.encoding,
+                            "detail": "Unsupported encoding"
+                        }),
+                    )),
+                );
             }
         };
         // Create file writer with policy checks
@@ -1534,10 +1766,19 @@ Notes
                     }),
                 );
                 return create_error_response(
-                    id,
+                    id.clone(),
                     McpErrorCode::PolicyDeny,
                     Some(format!("Path not allowed: {}", path)),
-                    Some(serde_json::json!({"rule": "pathNotAllowed"})),
+                    Some(self.build_error_data(
+                        "fs.write",
+                        &id,
+                        "policyDenied",
+                        serde_json::json!({
+                            "rule": "pathNotAllowed",
+                            "path": path,
+                            "detail": "Path outside allowed roots"
+                        }),
+                    )),
                 );
             }
             Err(FsError::WriteNotPermitted { path }) => {
@@ -1550,10 +1791,19 @@ Notes
                     }),
                 );
                 return create_error_response(
-                    id,
+                    id.clone(),
                     McpErrorCode::PolicyDeny,
                     Some(format!("Write not permitted: {}", path)),
-                    Some(serde_json::json!({"rule": "writeNotPermitted"})),
+                    Some(self.build_error_data(
+                        "fs.write",
+                        &id,
+                        "policyDenied",
+                        serde_json::json!({
+                            "rule": "writeNotPermitted",
+                            "path": path,
+                            "detail": "Write not permitted by policy"
+                        }),
+                    )),
                 );
             }
             Err(FsError::FileTooLarge { size, limit }) => {
@@ -1566,13 +1816,24 @@ Notes
                     }),
                 );
                 return create_error_response(
-                    id,
+                    id.clone(),
                     McpErrorCode::PolicyDeny,
                     Some(format!(
                         "File too large: {} bytes exceeds limit {}",
                         size, limit
                     )),
-                    Some(serde_json::json!({"rule": "fileTooLarge"})),
+                    Some(self.build_error_data(
+                        "fs.write",
+                        &id,
+                        "fileTooLarge",
+                        serde_json::json!({
+                            "rule": "fileTooLarge",
+                            "path": write_params.path,
+                            "sizeBytes": size,
+                            "limitBytes": limit,
+                            "detail": "File exceeds maximum size"
+                        }),
+                    )),
                 );
             }
             Err(e) => {
@@ -1585,10 +1846,18 @@ Notes
                     }),
                 );
                 return create_error_response(
-                    id,
+                    id.clone(),
                     McpErrorCode::IoError,
                     Some(format!("Write setup error: {}", e)),
-                    None,
+                    Some(self.build_error_data(
+                        "fs.write",
+                        &id,
+                        "ioError",
+                        serde_json::json!({
+                            "path": write_params.path,
+                            "detail": "Write setup error"
+                        }),
+                    )),
                 );
             }
         };
@@ -1620,10 +1889,18 @@ Notes
                     }),
                 );
                 create_error_response(
-                    id,
+                    id.clone(),
                     McpErrorCode::IoError,
                     Some(format!("Write error: {}", e)),
-                    None,
+                    Some(self.build_error_data(
+                        "fs.write",
+                        &id,
+                        "ioError",
+                        serde_json::json!({
+                            "path": write_params.path,
+                            "detail": "Write error"
+                        }),
+                    )),
                 )
             }
         }
@@ -1636,10 +1913,12 @@ Notes
                 self.auditor
                     .log_error(ctx, &format!("Invalid cmd.run parameters: {}", e), None);
                 return create_error_response(
-                    id,
+                    id.clone(),
                     McpErrorCode::InvalidArgs,
                     Some(format!("Invalid parameters: {}", e)),
-                    None,
+                    Some(serde_json::json!({
+                        "reason": "invalidParameters"
+                    })),
                 );
             }
         };
@@ -1665,10 +1944,20 @@ Notes
                     }),
                 );
                 return create_error_response(
-                    id,
+                    id.clone(),
                     McpErrorCode::PolicyDeny,
                     Some(format!("Command not found: {}", cmd_id)),
-                    Some(serde_json::json!({"rule": "commandNotFound"})),
+                    Some(self.build_error_data(
+                        "cmd.run",
+                        &id,
+                        "policyDenied",
+                        serde_json::json!({
+                            "rule": "commandNotFound",
+                            "commandId": cmd_id,
+                            "timedOut": false,
+                            "truncated": false
+                        }),
+                    )),
                 );
             }
             Err(CatalogError::Policy(mdmcp_policy::PolicyError::PolicyDenied { rule })) => {
@@ -1681,10 +1970,20 @@ Notes
                     }),
                 );
                 return create_error_response(
-                    id,
+                    id.clone(),
                     McpErrorCode::PolicyDeny,
                     Some(format!("Policy denied: {}", rule)),
-                    Some(serde_json::json!({"rule": rule})),
+                    Some(self.build_error_data(
+                        "cmd.run",
+                        &id,
+                        "policyDenied",
+                        serde_json::json!({
+                            "rule": rule,
+                            "commandId": run_params.command_id,
+                            "timedOut": false,
+                            "truncated": false
+                        }),
+                    )),
                 );
             }
             Err(e) => {
@@ -1697,10 +1996,19 @@ Notes
                     }),
                 );
                 return create_error_response(
-                    id,
+                    id.clone(),
                     McpErrorCode::InvalidArgs,
                     Some(format!("Command validation error: {}", e)),
-                    None,
+                    Some(self.build_error_data(
+                        "cmd.run",
+                        &id,
+                        "validationFailed",
+                        serde_json::json!({
+                            "commandId": run_params.command_id,
+                            "timedOut": false,
+                            "truncated": false
+                        }),
+                    )),
                 );
             }
         };
@@ -1739,10 +2047,20 @@ Notes
                     }),
                 );
                 create_error_response(
-                    id,
+                    id.clone(),
                     McpErrorCode::Timeout,
                     Some(format!("Command timed out after {}ms", timeout_ms)),
-                    None,
+                    Some(self.build_error_data(
+                        "cmd.run",
+                        &id,
+                        "timeout",
+                        serde_json::json!({
+                            "commandId": run_params.command_id,
+                            "timeoutMs": timeout_ms,
+                            "timedOut": true,
+                            "truncated": false
+                        }),
+                    )),
                 )
             }
             Err(e) => {
@@ -1755,10 +2073,19 @@ Notes
                     }),
                 );
                 create_error_response(
-                    id,
+                    id.clone(),
                     McpErrorCode::Internal,
                     Some(format!("Command execution error: {}", e)),
-                    None,
+                    Some(self.build_error_data(
+                        "cmd.run",
+                        &id,
+                        "executionError",
+                        serde_json::json!({
+                            "commandId": run_params.command_id,
+                            "timedOut": false,
+                            "truncated": false
+                        }),
+                    )),
                 )
             }
         }

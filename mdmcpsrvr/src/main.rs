@@ -66,12 +66,7 @@ async fn main() -> Result<()> {
         let mut keys: Vec<String> = std::env::vars().map(|(k, _)| k).collect();
         keys.sort_unstable_by(|a, b| a.to_ascii_lowercase().cmp(&b.to_ascii_lowercase()));
         let total = keys.len();
-        let preview: String = keys
-            .iter()
-            .take(40)
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(", ");
+        let preview: String = keys.iter().take(40).cloned().collect::<Vec<_>>().join(", ");
         if total > 40 {
             info!(
                 "Process env keys ({} total): {} … ({} more)",

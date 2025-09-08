@@ -299,6 +299,11 @@ async fn update_from_github(
     let install_info = InstallationInfo::new(release.tag_name.clone(), paths)?;
     install_info.save(paths)?;
 
+    // Refresh core policy defaults on update
+    if let Err(e) = refresh_core_policy(paths) {
+        println!("⚠️  Failed to refresh core policy: {}", e);
+    }
+
     println!("✅ Update completed successfully!");
     println!("   New version: {}", release.tag_name);
 
@@ -392,6 +397,11 @@ async fn update_from_local_binary(
     // Update installation info
     let install_info = InstallationInfo::new_local(version.clone(), paths, source_binary)?;
     install_info.save(paths)?;
+
+    // Refresh core policy defaults on update
+    if let Err(e) = refresh_core_policy(paths) {
+        println!("⚠️  Failed to refresh core policy: {}", e);
+    }
 
     println!("✅ Local update completed successfully!");
     println!("   New version: {} (local)", version);
@@ -1171,6 +1181,49 @@ fn create_default_policy_content() -> Result<String> {
             15_000,
             4_000_000,
         ));
+        // Additional common Windows tools
+        commands.push(win_exec(
+            "ping",
+            "C:/Windows/System32/ping.exe",
+            15_000,
+            2_000_000,
+        ));
+        commands.push(win_exec(
+            "ipconfig",
+            "C:/Windows/System32/ipconfig.exe",
+            10_000,
+            2_000_000,
+        ));
+        commands.push(win_exec(
+            "whoami",
+            "C:/Windows/System32/whoami.exe",
+            5_000,
+            500_000,
+        ));
+        commands.push(win_exec(
+            "fc",
+            "C:/Windows/System32/fc.exe",
+            20_000,
+            4_000_000,
+        ));
+        commands.push(win_exec(
+            "timeout",
+            "C:/Windows/System32/timeout.exe",
+            15_000,
+            200_000,
+        ));
+        commands.push(win_exec(
+            "forfiles",
+            "C:/Windows/System32/forfiles.exe",
+            15_000,
+            2_000_000,
+        ));
+        commands.push(win_exec(
+            "typeperf",
+            "C:/Windows/System32/typeperf.exe",
+            30_000,
+            4_000_000,
+        ));
     }
 
     let policy = Policy {
@@ -1188,6 +1241,25 @@ fn create_default_policy_content() -> Result<String> {
         limits: LimitsConfig::default(),
     };
     Ok(serde_yaml::to_string(&policy)?)
+}
+
+/// Overwrite the core policy file with current defaults, preserving read-only flag.
+fn refresh_core_policy(paths: &Paths) -> Result<()> {
+    use std::fs;
+    let core = &paths.core_policy_file;
+    let was_readonly = core.exists() && fs::metadata(core)?.permissions().readonly();
+    if core.exists() && was_readonly {
+        set_readonly(core, false).ok();
+    }
+    if core.exists() {
+        let bak = core.with_extension("yaml.bak");
+        let _ = fs::copy(core, &bak);
+    }
+    let content = create_default_policy_content()?;
+    write_file(core, &content)?;
+    set_readonly(core, true).ok();
+    println!("📝 Refreshed core policy defaults: {}", core.display());
+    Ok(())
 }
 
 /// Minimal user overlay policy: valid schema with empty lists

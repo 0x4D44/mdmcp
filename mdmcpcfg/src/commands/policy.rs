@@ -363,8 +363,8 @@ pub async fn set_env(id: String, kv: Vec<String>) -> Result<()> {
         );
     }
     let content = read_file(&paths.policy_file)?;
-    let mut policy: Value = serde_yaml::from_str(&content)
-        .context("Failed to parse policy file")?;
+    let mut policy: Value =
+        serde_yaml::from_str(&content).context("Failed to parse policy file")?;
 
     let commands = policy
         .get_mut("commands")
@@ -414,8 +414,8 @@ pub async fn unset_env(id: String, names: Vec<String>) -> Result<()> {
         );
     }
     let content = read_file(&paths.policy_file)?;
-    let mut policy: Value = serde_yaml::from_str(&content)
-        .context("Failed to parse policy file")?;
+    let mut policy: Value =
+        serde_yaml::from_str(&content).context("Failed to parse policy file")?;
 
     let commands = policy
         .get_mut("commands")

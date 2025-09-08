@@ -580,8 +580,8 @@ pub fn filter_environment(
                     chosen = Some(expanded);
                 } else if req_v.trim() == format!("%{}%", key) {
                     // Self-referential; prefer system value if available
-                    if let Some((_, sys_v)) = std::env::vars()
-                        .find(|(k, _)| k.eq_ignore_ascii_case(key))
+                    if let Some((_, sys_v)) =
+                        std::env::vars().find(|(k, _)| k.eq_ignore_ascii_case(key))
                     {
                         chosen = Some(sys_v);
                     } else {
@@ -593,8 +593,8 @@ pub fn filter_environment(
             }
 
             if chosen.is_none() {
-                if let Some((_, sys_v)) = std::env::vars()
-                    .find(|(k, _)| k.eq_ignore_ascii_case(key))
+                if let Some((_, sys_v)) =
+                    std::env::vars().find(|(k, _)| k.eq_ignore_ascii_case(key))
                 {
                     chosen = Some(sys_v);
                 }

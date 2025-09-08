@@ -84,7 +84,13 @@ pub async fn send_response(response: &RpcResponse) -> Result<()> {
             .result
             .as_ref()
             .and_then(|v| serde_json::to_string(v).ok())
-            .map(|s| if s.len() > 20 { format!("{}...", &s[..20]) } else { s })
+            .map(|s| {
+                if s.len() > 20 {
+                    format!("{}...", &s[..20])
+                } else {
+                    s
+                }
+            })
             .unwrap_or_else(|| "null".to_string());
         tracing::info!(
             "✅ Sending success response (id={:?}): Success ({})",

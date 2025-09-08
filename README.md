@@ -204,3 +204,82 @@ For a deeper dive, see:
 - `examples/policy.example.yaml` — starter policy template
 - `INSTALLATION_AND_USAGE.md` — additional platform notes
 - `mcp-server-development-guide.md` — MCP implementation details
+
+
+## Structured Error Responses
+
+The server now attaches structured `error.data` to all JSON‑RPC error responses. These fields make failures easier to diagnose programmatically and in logs.
+
+- Common fields (always present on errors):
+  - `method`: The MCP method that failed (or `"unknown"` for parse errors).
+  - `reason`: Short, machine‑friendly reason code (e.g., `invalidParameters`, `policyDenied`, `ioError`).
+  - `requestId`: The JSON‑RPC id echoed back as a string/number/`null`.
+  - `serverVersion`: mdmcpsrvr version string.
+  - `policyHash`: Current active policy hash.
+
+- File system errors (`fs.read`, `fs.write`):
+  - `path`: The file path involved (when applicable).
+  - `rule`: The policy rule name on denials (e.g., `pathNotAllowed`, `writeNotPermitted`, `networkFsDenied`, `fileTooLarge`).
+  - `detail`: Short human‑readable hint.
+
+- Command errors (`cmd.run`):
+  - `commandId`: The command id from the catalog.
+  - `timedOut`, `truncated`: Booleans set for timeout/output‑limit related cases (also `false` in validation/denial paths for clarity).
+  - `exitCode`, `stderrSnippet` (<= 200 chars): Included when available for execution‑related failures. Note: non‑zero exit codes currently return success with result; these fields may be absent in error paths that occur before process completion (e.g., validation/denial/timeout).
+
+Examples
+
+```jsonc
+// fs.read with invalid encoding
+{
+  "code": -32602,
+  "message": "Invalid method parameter(s)",
+  "data": {
+    "method": "fs.read",
+    "reason": "invalidEncoding",
+    "requestId": "42",
+    "serverVersion": "x.y.z",
+    "policyHash": "<hash>",
+    "encoding": "utf16",
+    "detail": "Unsupported encoding"
+  }
+}
+```
+
+```jsonc
+// cmd.run denied by policy (unknown command)
+{
+  "code": -32001,
+  "message": "Policy denied: commandNotFound",
+  "data": {
+    "method": "cmd.run",
+    "reason": "policyDenied",
+    "requestId": "abc-123",
+    "serverVersion": "x.y.z",
+    "policyHash": "<hash>",
+    "rule": "commandNotFound",
+    "commandId": "not-a-command",
+    "timedOut": false,
+    "truncated": false
+  }
+}
+```
+
+```jsonc
+// cmd.run timeout
+{
+  "code": -32002,
+  "message": "Command timed out after 5000ms",
+  "data": {
+    "method": "cmd.run",
+    "reason": "timeout",
+    "requestId": 7,
+    "serverVersion": "x.y.z",
+    "policyHash": "<hash>",
+    "commandId": "long_running",
+    "timeoutMs": 5000,
+    "timedOut": true,
+    "truncated": false
+  }
+}
+```
