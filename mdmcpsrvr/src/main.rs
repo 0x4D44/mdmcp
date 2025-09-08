@@ -64,7 +64,7 @@ async fn main() -> Result<()> {
     #[cfg(windows)]
     {
         let mut keys: Vec<String> = std::env::vars().map(|(k, _)| k).collect();
-        keys.sort_unstable_by(|a, b| a.to_ascii_lowercase().cmp(&b.to_ascii_lowercase()));
+        keys.sort_unstable_by_key(|a| a.to_ascii_lowercase());
         let total = keys.len();
         let preview: String = keys.iter().take(40).cloned().collect::<Vec<_>>().join(", ");
         if total > 40 {
