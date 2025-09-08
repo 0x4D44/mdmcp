@@ -214,7 +214,7 @@ impl Policy {
         let mut write_rules_canonical = Vec::new();
         for rule in &self.write_rules {
             let expanded = expand_path(&rule.path)?;
-            let canonical = canonicalize_path(&expanded)?;
+            let canonical = canonicalize_path_for_write_rule(&expanded, rule.create_if_missing)?;
             write_rules_canonical.push(CompiledWriteRule {
                 path_canonical: canonical,
                 recursive: rule.recursive,
@@ -439,6 +439,47 @@ fn expand_path(path: &str) -> Result<PathBuf> {
 fn canonicalize_path(path: &Path) -> Result<PathBuf> {
     dunce::canonicalize(path)
         .with_context(|| format!("Failed to canonicalize path: {}", path.display()))
+}
+
+/// Canonicalize a path that may not yet exist (used for write rules).
+/// If `create_if_missing` is true and the path doesn't exist, canonicalize the
+/// nearest existing ancestor and rejoin the remaining components.
+fn canonicalize_path_for_write_rule(path: &Path, create_if_missing: bool) -> Result<PathBuf> {
+    if path.exists() {
+        return canonicalize_path(path);
+    }
+    if !create_if_missing {
+        // Fall back to standard behavior (will error with a clearer message)
+        return canonicalize_path(path);
+    }
+
+    // Walk up to find an existing ancestor
+    let mut components: Vec<PathBuf> = Vec::new();
+    let mut cursor = path;
+    loop {
+        if cursor.exists() {
+            break;
+        }
+        if let Some(parent) = cursor.parent() {
+            if let Some(name) = cursor.file_name() {
+                components.push(PathBuf::from(name));
+            }
+            cursor = parent;
+        } else {
+            // No existing ancestor; return a clearer error
+            return Err(anyhow::anyhow!(
+                "Failed to canonicalize path for write rule (no existing ancestor): {}",
+                path.display()
+            ));
+        }
+    }
+
+    // Canonicalize the existing ancestor and rejoin the non-existent suffix
+    let mut base = canonicalize_path(cursor)?;
+    for part in components.iter().rev() {
+        base.push(part);
+    }
+    Ok(base)
 }
 
 // Removed PATH search: executables must be absolute
