@@ -22,7 +22,7 @@ use mdmcp_common::{
     ResourceContent, ResourceInfo, ResourcesListParams, ResourcesListResult, ResourcesReadParams,
     ResourcesReadResult, RpcId, RpcRequest, RpcResponse, ServerCapabilities, ServerInfo,
 };
-use mdmcp_policy::CompiledPolicy;
+use mdmcp_policy::{CompiledPolicy, Policy};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -1633,11 +1633,24 @@ impl Server {
     /// Reload the policy from the configured path, rebuilding catalogs.
     async fn reload_policy(&self) -> Result<Arc<CompiledPolicy>> {
         let path = self.config_path.clone();
-        let new_policy =
-            tokio::task::spawn_blocking(move || mdmcp_policy::Policy::load(&path)?.compile())
-                .await
-                .context("Failed to reload policy")?
-                .context("Failed to compile reloaded policy")?;
+        // Merge core + user same as startup
+        let new_policy = tokio::task::spawn_blocking(move || -> anyhow::Result<CompiledPolicy> {
+            let user = Policy::load(&path)?;
+            // Look for sibling policy.core.yaml
+            let core_path = path
+                .parent()
+                .map(|d| d.join("policy.core.yaml"))
+                .filter(|p| p.exists());
+            let merged = if let Some(cp) = core_path {
+                let core = Policy::load(&cp)?;
+                mdmcp_policy::merge_policies(core, user)
+            } else {
+                user
+            };
+            merged.compile()
+        })
+        .await
+        .context("Failed to reload policy")??;
         let new_policy_arc = Arc::new(new_policy);
         // Swap policy and rebuild command catalog
         {

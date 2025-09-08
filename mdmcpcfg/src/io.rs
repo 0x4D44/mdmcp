@@ -13,6 +13,7 @@ pub struct Paths {
     pub bin_dir: PathBuf,
     pub config_dir: PathBuf,
     pub policy_file: PathBuf,
+    pub core_policy_file: PathBuf,
 }
 
 impl Paths {
@@ -46,12 +47,23 @@ impl Paths {
             (data_dir.join("mdmcp").join("bin"), config_dir.join("mdmcp"))
         };
 
-        let policy_file = config_dir.join("policy.yaml");
+        // Prefer new user policy name; fall back to legacy if present for backward compatibility
+        let candidate_user = config_dir.join("policy.user.yaml");
+        let legacy_user = config_dir.join("policy.yaml");
+        let policy_file = if candidate_user.exists() {
+            candidate_user
+        } else if legacy_user.exists() {
+            legacy_user
+        } else {
+            candidate_user
+        };
+        let core_policy_file = config_dir.join("policy.core.yaml");
 
         Ok(Self {
             bin_dir,
             config_dir,
             policy_file,
+            core_policy_file,
         })
     }
 

@@ -273,6 +273,73 @@ impl Policy {
     }
 }
 
+/// Merge two policies into one, with `user` taking precedence over `core`.
+/// Collections are combined with simple de-duplication by key where sensible.
+pub fn merge_policies(core: Policy, user: Policy) -> Policy {
+    // Version: keep core's version (schemas must match)
+    let version = core.version;
+
+    // deny_network_fs: user override wins
+    let deny_network_fs = user.deny_network_fs || core.deny_network_fs;
+
+    // allowed_roots: union (preserve order: core first, then user uniques)
+    let mut allowed_roots = core.allowed_roots.clone();
+    for r in user.allowed_roots {
+        if !allowed_roots.contains(&r) {
+            allowed_roots.push(r);
+        }
+    }
+
+    // write_rules: de-dupe by path; user overrides rule for same path
+    use std::collections::HashMap;
+    let mut write_map: HashMap<String, WriteRule> = HashMap::new();
+    for r in core.write_rules.into_iter() {
+        write_map.insert(r.path.clone(), r);
+    }
+    for r in user.write_rules.into_iter() {
+        write_map.insert(r.path.clone(), r); // user overwrites
+    }
+    let mut write_rules: Vec<WriteRule> = write_map.into_values().collect();
+    write_rules.sort_by(|a, b| a.path.cmp(&b.path));
+
+    // commands: map by id; user overrides
+    let mut cmd_map: HashMap<String, CommandRule> = HashMap::new();
+    for c in core.commands.into_iter() {
+        cmd_map.insert(c.id.clone(), c);
+    }
+    for c in user.commands.into_iter() {
+        cmd_map.insert(c.id.clone(), c);
+    }
+    let mut commands: Vec<CommandRule> = cmd_map.into_values().collect();
+    commands.sort_by(|a, b| a.id.cmp(&b.id));
+
+    // logging: user overrides fields; redact list union
+    let mut logging = core.logging.clone();
+    // level
+    logging.level = user.logging.level;
+    // file: prefer user setting if provided, else keep core
+    logging.file = user.logging.file.or(logging.file);
+    // redact union
+    for k in user.logging.redact {
+        if !logging.redact.contains(&k) {
+            logging.redact.push(k);
+        }
+    }
+
+    // limits: prefer user overrides (simple replace)
+    let limits = user.limits;
+
+    Policy {
+        version,
+        deny_network_fs,
+        allowed_roots,
+        write_rules,
+        commands,
+        logging,
+        limits,
+    }
+}
+
 impl CompiledPolicy {
     /// Check if a path is within allowed roots
     pub fn is_path_allowed(&self, path: &Path) -> Result<bool> {

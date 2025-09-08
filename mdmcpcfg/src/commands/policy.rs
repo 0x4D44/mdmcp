@@ -6,6 +6,7 @@
 use anyhow::{bail, Context, Result};
 use serde_yaml::{Mapping, Value};
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use crate::io::{read_file, write_file, Paths};
 
@@ -47,21 +48,74 @@ pub async fn edit() -> Result<()> {
         return Ok(());
     }
 
-    println!(
-        "✏️  Opening policy file in editor: {}",
-        paths.policy_file.display()
-    );
+    // If VS Code is available and core exists, open both files in a single instance
+    if paths.core_policy_file.exists() {
+        if let Ok(code_path) = which::which("code")
+            .or_else(|_| which::which("code.cmd"))
+            .or_else(|_| which::which("Code.exe"))
+        {
+            println!(
+                "📝 Opening core and user policies in VS Code: {}, {}",
+                paths.core_policy_file.display(),
+                paths.policy_file.display()
+            );
+            // Use -n to open a new window, -w to wait for the window to be closed
+            let status = std::process::Command::new(code_path)
+                .arg("-n")
+                .arg("-w")
+                .arg(&paths.core_policy_file)
+                .arg(&paths.policy_file)
+                .status()
+                .context("Failed to launch VS Code")?;
+            if !status.success() {
+                println!("⚠️  VS Code exited with non-zero status; falling back to single-file editor for user policy.");
+                open_single_file_editor(&paths.policy_file)?;
+            }
+        } else {
+            // Fall back to opening core (read-only) then user overlay
+            println!(
+                "📄 Opening core policy (read-only) for reference: {}",
+                paths.core_policy_file.display()
+            );
+            edit::edit_file(&paths.core_policy_file).with_context(|| {
+                format!(
+                    "Failed to open editor for core policy: {}",
+                    paths.core_policy_file.display()
+                )
+            })?;
 
-    // Use the edit crate to open in default editor
-    edit::edit_file(&paths.policy_file)
-        .with_context(|| format!("Failed to open editor for: {}", paths.policy_file.display()))?;
+            println!(
+                "✏️  Opening user policy overlay in editor: {}",
+                paths.policy_file.display()
+            );
+            open_single_file_editor(&paths.policy_file)?;
+        }
+    } else {
+        // No core policy; just open user overlay
+        println!(
+            "✏️  Opening user policy overlay in editor: {}",
+            paths.policy_file.display()
+        );
+        open_single_file_editor(&paths.policy_file)?;
+    }
 
-    println!("✅ Policy file edited");
+    println!("✅ User policy edited");
 
     // Validate after editing
     println!("🔍 Validating edited policy...");
-    validate(Some(paths.policy_file.to_string_lossy().to_string())).await?;
+    // Validate the merged policy (core + user) if core exists
+    if paths.core_policy_file.exists() {
+        validate_merged(&paths).await?;
+    } else {
+        validate(Some(paths.policy_file.to_string_lossy().to_string())).await?;
+    }
 
+    Ok(())
+}
+
+fn open_single_file_editor(file: &Path) -> Result<()> {
+    edit::edit_file(file)
+        .with_context(|| format!("Failed to open editor for: {}", file.display()))?;
     Ok(())
 }
 
@@ -91,6 +145,26 @@ pub async fn validate(file_path: Option<String>) -> Result<()> {
     println!("✅ Policy file is valid");
     print_policy_summary(&policy)?;
 
+    Ok(())
+}
+
+/// Validate merged core + user policies by compiling via mdmcp_policy
+async fn validate_merged(paths: &Paths) -> Result<()> {
+    println!("🔍 Validating merged policy (core + user)...");
+    let user_content = read_file(&paths.policy_file)?;
+    let core_content = read_file(&paths.core_policy_file)?;
+
+    let user =
+        mdmcp_policy::Policy::from_yaml(&user_content).context("Invalid YAML in user policy")?;
+    let core =
+        mdmcp_policy::Policy::from_yaml(&core_content).context("Invalid YAML in core policy")?;
+
+    let merged = mdmcp_policy::merge_policies(core, user);
+    merged
+        .compile()
+        .context("Merged policy failed to compile (check allowed_roots, commands, write_rules)")?;
+
+    println!("✅ Merged policy is valid");
     Ok(())
 }
 

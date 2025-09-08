@@ -15,8 +15,8 @@
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use mdmcp_policy::CompiledPolicy;
-use std::path::PathBuf;
+use mdmcp_policy::{CompiledPolicy, Policy};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::io::{self, AsyncBufReadExt, BufReader};
 use tracing::{debug, error, info};
@@ -112,11 +112,30 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn load_policy(path: &PathBuf) -> Result<CompiledPolicy> {
-    let policy = mdmcp_policy::Policy::load(path)
-        .with_context(|| format!("Failed to load policy from {}", path.display()))?;
+async fn load_policy(path: &Path) -> Result<CompiledPolicy> {
+    // Attempt to load optional core policy sitting next to the main policy
+    let core_path = path
+        .parent()
+        .map(|d| d.join("policy.core.yaml"))
+        .filter(|p| p.exists());
 
-    policy.compile().context("Failed to compile policy")
+    let merged = tokio::task::spawn_blocking({
+        let main = path.to_path_buf();
+        let core = core_path.clone();
+        move || -> anyhow::Result<Policy> {
+            let user = Policy::load(&main)?;
+            if let Some(cp) = core {
+                let corep = Policy::load(&cp)?;
+                Ok(mdmcp_policy::merge_policies(corep, user))
+            } else {
+                Ok(user)
+            }
+        }
+    })
+    .await
+    .context("Failed to spawn policy merge task")??;
+
+    merged.compile().context("Failed to compile policy")
 }
 
 async fn run_stdio_server(server: server::Server) -> Result<()> {

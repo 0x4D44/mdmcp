@@ -413,8 +413,8 @@ async fn install_from_github(dest_dir: Option<String>, configure_claude: bool) -
     // Download the server binary specifically
     download_binary(&release, "mdmcpsrvr", &binary_path).await?;
 
-    // Create default policy if it doesn't exist
-    create_default_policy(&paths.policy_file).await?;
+    // Create default core + user policy files if needed
+    create_default_policies(&paths).await?;
 
     // Configure Claude Desktop
     if configure_claude {
@@ -492,8 +492,8 @@ async fn install_from_local_binary(
     #[cfg(unix)]
     set_executable_permissions(&dest_binary)?;
 
-    // Create default policy and configure Claude Desktop
-    create_default_policy(&paths.policy_file).await?;
+    // Create default core + user policy files and configure Claude Desktop
+    create_default_policies(&paths).await?;
 
     if configure_claude {
         configure_claude_desktop(&paths).await?;
@@ -786,6 +786,7 @@ fn setup_paths(dest_dir: Option<String>) -> Result<Paths> {
             bin_dir: custom_bin_dir,
             config_dir: default_paths.config_dir,
             policy_file: default_paths.policy_file,
+            core_policy_file: default_paths.core_policy_file,
         })
     } else {
         Paths::new()
@@ -929,19 +930,47 @@ async fn download_binary(
     Ok(())
 }
 
-/// Create a default policy file if it doesn't exist
-async fn create_default_policy(policy_path: &Path) -> Result<()> {
-    if policy_path.exists() {
-        println!("ℹ️  Policy file already exists: {}", policy_path.display());
-        return Ok(());
+/// Create default core and user policy files if missing
+async fn create_default_policies(paths: &Paths) -> Result<()> {
+    // Core policy contains vendor defaults and may be overwritten by updates
+    if !paths.core_policy_file.exists() {
+        println!("📝 Creating core policy file...");
+        let default_policy = create_default_policy_content()?;
+        write_file(&paths.core_policy_file, &default_policy)?;
+        // Make core policy read-only to prevent accidental edits
+        set_readonly(&paths.core_policy_file, true)?;
+        println!(
+            "✅ Created core policy (read-only): {}",
+            paths.core_policy_file.display()
+        );
+    } else {
+        // Ensure core policy remains read-only
+        if let Err(e) = set_readonly(&paths.core_policy_file, true) {
+            println!(
+                "⚠️  Could not enforce read-only on core policy {}: {}",
+                paths.core_policy_file.display(),
+                e
+            );
+        }
+        println!(
+            "ℹ️  Core policy already exists: {}",
+            paths.core_policy_file.display()
+        );
     }
 
-    println!("📝 Creating default policy file...");
+    // User policy is a minimal overlay; only create if missing
+    if !paths.policy_file.exists() {
+        println!("📝 Creating user policy overlay file...");
+        let user_overlay = create_minimal_user_policy_content()?;
+        write_file(&paths.policy_file, &user_overlay)?;
+        println!("✅ Created user policy: {}", paths.policy_file.display());
+    } else {
+        println!(
+            "ℹ️  User policy already exists: {}",
+            paths.policy_file.display()
+        );
+    }
 
-    let default_policy = create_default_policy_content()?;
-    write_file(policy_path, &default_policy)?;
-
-    println!("✅ Created default policy: {}", policy_path.display());
     Ok(())
 }
 
@@ -1151,4 +1180,27 @@ fn create_default_policy_content() -> Result<String> {
         limits: LimitsConfig::default(),
     };
     Ok(serde_yaml::to_string(&policy)?)
+}
+
+/// Minimal user overlay policy: valid schema with empty lists
+fn create_minimal_user_policy_content() -> Result<String> {
+    use mdmcp_policy::{LimitsConfig, LoggingConfig, Policy};
+    let policy = Policy {
+        version: 1,
+        deny_network_fs: false,
+        allowed_roots: vec![],
+        write_rules: vec![],
+        commands: vec![],
+        logging: LoggingConfig::default(),
+        limits: LimitsConfig::default(),
+    };
+    Ok(serde_yaml::to_string(&policy)?)
+}
+
+/// Set or clear read-only attribute on a file cross-platform
+fn set_readonly(path: &Path, readonly: bool) -> Result<()> {
+    let mut perms = std::fs::metadata(path)?.permissions();
+    perms.set_readonly(readonly);
+    std::fs::set_permissions(path, perms)?;
+    Ok(())
 }
