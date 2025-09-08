@@ -263,7 +263,8 @@ async fn update_from_github(channel: String, paths: &Paths, force: bool) -> Resu
     }
 
     // Download new binary
-    download_binary(&release, &binary_path).await?;
+    // Download the server binary specifically
+    download_binary(&release, "mdmcpsrvr", &binary_path).await?;
 
     // Update installation info
     let install_info = InstallationInfo::new(release.tag_name.clone(), paths)?;
@@ -370,7 +371,8 @@ async fn install_from_github(dest_dir: Option<String>, configure_claude: bool) -
     println!("🔎 Found release: {}", release.tag_name);
 
     let binary_path = paths.server_binary();
-    download_binary(&release, &binary_path).await?;
+    // Download the server binary specifically
+    download_binary(&release, "mdmcpsrvr", &binary_path).await?;
 
     // Create default policy if it doesn't exist
     create_default_policy(&paths.policy_file).await?;
@@ -589,7 +591,7 @@ fn set_executable_permissions(path: &Path) -> Result<()> {
 fn prompt_user_confirmation() -> Result<bool> {
     use std::io::{self, Write};
 
-    print!("Install from local binary? [Y/n]: ");
+    print!("Proceed? [Y/n]: ");
     io::stdout().flush()?;
 
     let mut input = String::new();
@@ -793,15 +795,36 @@ async fn fetch_latest_prerelease() -> Result<GitHubRelease> {
         .context("No prerelease found")
 }
 
-/// Download the appropriate binary for the current platform
-async fn download_binary(release: &GitHubRelease, dest_path: &Path) -> Result<()> {
+/// Download the appropriate binary for the current platform, matching a specific artifact prefix
+async fn download_binary(release: &GitHubRelease, wanted_prefix: &str, dest_path: &Path) -> Result<()> {
     let platform = get_platform_string();
+    let wanted_lower = wanted_prefix.to_ascii_lowercase();
 
-    let asset = release
+    // Prefer assets that match both the wanted prefix (e.g., mdmcpsrvr) and platform triplet
+    let mut chosen: Option<&GitHubAsset> = release
         .assets
         .iter()
-        .find(|asset| asset.name.contains(&platform))
-        .with_context(|| format!("No binary found for platform: {}", platform))?;
+        .find(|a| a.name.to_ascii_lowercase().contains(&wanted_lower) && a.name.contains(&platform));
+
+    // Fallback: match wanted prefix only (last resort if platform suffix naming differs)
+    if chosen.is_none() {
+        chosen = release
+            .assets
+            .iter()
+            .find(|a| a.name.to_ascii_lowercase().contains(&wanted_lower));
+    }
+
+    // Final fallback: any asset for the platform
+    if chosen.is_none() {
+        chosen = release.assets.iter().find(|a| a.name.contains(&platform));
+    }
+
+    let asset = chosen.with_context(|| {
+        format!(
+            "No binary found for prefix '{}' and platform '{}' in release {}",
+            wanted_prefix, platform, release.tag_name
+        )
+    })?;
 
     println!("📥 Downloading: {}", asset.name);
 
