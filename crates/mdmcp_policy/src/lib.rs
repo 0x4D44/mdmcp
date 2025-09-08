@@ -72,6 +72,8 @@ pub struct CommandRule {
     pub id: String,
     pub exec: String,
     #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
     pub args: ArgsPolicy,
     #[serde(default)]
     pub cwd_policy: CwdPolicy,
@@ -307,7 +309,13 @@ pub fn merge_policies(core: Policy, user: Policy) -> Policy {
     for c in core.commands.into_iter() {
         cmd_map.insert(c.id.clone(), c);
     }
-    for c in user.commands.into_iter() {
+    for mut c in user.commands.into_iter() {
+        // If user didn't set description, inherit from core
+        if let Some(core_c) = cmd_map.get(&c.id) {
+            if c.description.is_none() && core_c.description.is_some() {
+                c.description = core_c.description.clone();
+            }
+        }
         cmd_map.insert(c.id.clone(), c);
     }
     let mut commands: Vec<CommandRule> = cmd_map.into_values().collect();
@@ -707,6 +715,7 @@ commands:
             rule: CommandRule {
                 id: "test".to_string(),
                 exec: "/bin/echo".to_string(),
+                description: None,
                 args: ArgsPolicy {
                     allow: vec!["hello".to_string(), "world".to_string()],
                     fixed: vec![],

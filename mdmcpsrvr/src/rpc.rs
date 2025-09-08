@@ -74,14 +74,22 @@ pub fn parse_request(line: &str) -> Result<RpcRequest> {
 pub async fn send_response(response: &RpcResponse) -> Result<()> {
     let json = serde_json::to_string(response).context("Failed to serialize response")?;
 
-    // Log the response being sent (with emoji for visibility in logs)
+    // Log the response being sent with condensed success details to avoid log bloat
     if response.error.is_some() {
+        // On error, include full JSON for troubleshooting
         tracing::info!("❌ Sending error response (id={:?}): {}", response.id, json);
     } else {
+        // On success, log a short summary (first 20 chars of result JSON)
+        let snippet = response
+            .result
+            .as_ref()
+            .and_then(|v| serde_json::to_string(v).ok())
+            .map(|s| if s.len() > 20 { format!("{}...", &s[..20]) } else { s })
+            .unwrap_or_else(|| "null".to_string());
         tracing::info!(
-            "✅ Sending success response (id={:?}): {}",
+            "✅ Sending success response (id={:?}): Success ({})",
             response.id,
-            json
+            snippet
         );
     }
 

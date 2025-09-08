@@ -66,11 +66,11 @@ impl Server {
     }
     /// Handle a JSON-RPC message line (request or notification)
     pub async fn handle_request_line(&self, line: &str) -> Result<()> {
-        info!("ðŸ“¨ Incoming request: {}", line);
+        info!("Incoming request: {}", line);
         match rpc::parse_message(line) {
             Ok(RpcMessage::Request(request)) => {
                 info!(
-                    "ðŸ” Parsed request: method='{}', id={:?}",
+                    "Parsed request: method='{}', id={:?}",
                     request.method, request.id
                 );
                 self.handle_request(request).await;
@@ -78,7 +78,7 @@ impl Server {
             }
             Ok(RpcMessage::Notification { method, params }) => {
                 info!(
-                    "ðŸ”” Parsed notification: method='{}', params={}",
+                    "Parsed notification: method='{}', params={}",
                     method,
                     serde_json::to_string(&params).unwrap_or_else(|_| "invalid".to_string())
                 );
@@ -108,7 +108,7 @@ impl Server {
         debug!("Handling notification: method={}", method);
         match method.as_str() {
             "initialized" => {
-                info!("ðŸ¤ Received initialized notification - handshake complete");
+                info!("Received initialized notification - handshake complete");
                 // The client has confirmed initialization is complete
                 // Server is now ready for normal operation
             }
@@ -592,6 +592,9 @@ impl Server {
                     for (i, (cmd_id, cmd_rule)) in policy.commands_by_id.iter().enumerate() {
                         content.push_str(&format!("{}. **{}**\n", i + 1, cmd_id));
                         content.push_str(&format!("   - Executable: {}\n", cmd_rule.rule.exec));
+                        if let Some(desc) = cmd_rule.rule.description.as_ref() {
+                            content.push_str(&format!("   - Description: {}\n", desc));
+                        }
                         content
                             .push_str(&format!("   - Timeout: {}ms\n", cmd_rule.rule.timeout_ms));
                         content.push_str(&format!(
@@ -613,7 +616,7 @@ impl Server {
                         content
                             .push_str(&format!("   - Platforms: {:?}\n\n", cmd_rule.rule.platform));
                     }
-                    content
+                        content
                 };
                 // Return proper MCP tools/call response format
                 let result = serde_json::json!({
@@ -724,7 +727,74 @@ impl Server {
                     "unknown".to_string()
                 };
                 let doc = format!(
-                    r#"mdmcp Documentation\n\nServer: mdmcpsrvr v{} (build {})\nPolicy hash: {}â€¦ | roots: {} | commands: {}\n\nmdmcpcfg â€“ Policy and Install CLI\n- Show policy: `mdmcpcfg policy show`\n- Edit policy: `mdmcpcfg policy edit` (opens your editor)\n- Validate policy: `mdmcpcfg policy validate`\n- Add allowed root: `mdmcpcfg policy add-root "<path>" --write`\n  â€¢ Adds to `allowed_roots` and (with --write) creates a write rule.\n- Add command: `mdmcpcfg policy add-command <id> --exec "<absolute_exec_path>"`\n  â€¢ Optional: `--allow <arg>` (repeatable), `--pattern <regex>` (repeatable).\n  â€¢ Defaults: `cwd_policy: within_root`, `allow_any_args: true`, sane timeouts.\n- Remove a rule or command: use `mdmcpcfg policy edit`, delete the YAML entry, then `mdmcpcfg policy validate`.\n\nInstalling and Updating mdmcpsrvr\n- Install latest release and configure Claude Desktop: `mdmcpcfg install`\n  â€¢ Optionally `--dest <dir>` to choose binary directory.\n  â€¢ `--local --local-path <path>` to install a locally built binary.\n- Update to latest: `mdmcpcfg update` (flags: `--channel stable|beta`, `--force`)\n  â€¢ Rollback is not yet implemented (`--rollback` will report unimplemented).\n- Uninstall: no dedicated command. To remove manually:\n  1) Stop clients using the server (e.g., close Claude Desktop).\n  2) Delete the server binary from the mdmcp bin dir.\n  3) Remove policy/config directory if desired.\n  4) Remove the mdmcp entry from Claude Desktop config (see below).\n\nClaude Desktop Integration\n- `mdmcpcfg install` adds an entry to Claude Desktopâ€™s config pointing at mdmcpsrvr with `--config <policy> --stdio`.\n- Config paths (typical):\n  â€¢ Windows: `%APPDATA%/Claude/claude_desktop_config.json`\n  â€¢ macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`\n  â€¢ Linux: `~/.config/Claude/claude_desktop_config.json`\n\nUsing the MCP Tools\n- File I/O: `read_file`, `write_file` operate within allowed roots.\n- Commands: `run_command` executes catalog entries from the policy.\n- Discoverability:\n  â€¢ `list_accessible_directories` â€” shows allowed roots.\n  â€¢ `list_available_commands` â€” shows command catalog details.\n- Management:\n  â€¢ `server_info` â€” version, build, policy summary, policy format.\n  â€¢ `reload_policy` â€” reloads the policy file without restart.\n\nPolicy Authoring Tips\n- Start from defaults (`mdmcpcfg install` creates a sensible policy).\n- Keep `deny_network_fs: true` unless you explicitly need network mounts.\n- Restrict `allowed_roots` to the folders you actually use.\n- Prefer fixed/allow args for commands; use regex patterns carefully.\n- Never put secrets into logs.\n\nExamples\n- Add a dev workspace and allow writes:\n  `mdmcpcfg policy add-root "<your_dev_dir>" --write`\n- Add Cargo (Windows):\n  `mdmcpcfg policy add-command cargo --exec C:/Users/<you>/.cargo/bin/cargo.exe`\n- Add Git (Windows):\n  `mdmcpcfg policy add-command git --exec C:/Program Files/Git/bin/git.exe`\n- Build a project from Claude:\n  Use `cmd.run` with `commandId: "cargo"`, `args: ["build"]`, and set `cwd` to your project folder.\n\nNotes\n- The server runs commands directly (no implicit shell). Use `cmd.exe /c` or `/bin/sh -c` in a policy command if you need shell features.\n- On Windows/MSVC, the server bootstraps VS variables automatically (vcvars) for cargo/rustc so linking works like your normal shell.\n"#,
+                    r#"mdmcp Documentation
+
+Server: mdmcpsrvr v{} (build {})
+Policy hash: {}… | roots: {} | commands: {}
+
+mdmcpcfg – Policy and Install CLI
+- Show policy: `mdmcpcfg policy show`
+- Edit policy: `mdmcpcfg policy edit` (opens your editor)
+- Validate policy: `mdmcpcfg policy validate`
+- Add allowed root: `mdmcpcfg policy add-root "<path>" --write`
+  • Adds to `allowed_roots` and (with --write) creates a write rule.
+- Add command: `mdmcpcfg policy add-command <id> --exec "<absolute_exec_path>"`
+  • Optional: `--allow <arg>` (repeatable), `--pattern <regex>` (repeatable).
+  • Defaults: `cwd_policy: within_root`, `allow_any_args: true`, sane timeouts.
+  • Recommendation: add a short `description` to each custom command so clients can explain its purpose.
+  • Environment variables: list any required names in `env_allowlist`. Values come from the cmd.run request `env` or the server process environment. With split policy, set/override these in `policy.user.yaml`.
+- Remove a rule or command: use `mdmcpcfg policy edit`, delete the YAML entry, then `mdmcpcfg policy validate`.
+
+Installing and Updating mdmcpsrvr
+- Install latest release and configure Claude Desktop: `mdmcpcfg install`
+  • Optionally `--dest <dir>` to choose binary directory.
+  • `--local --local-path <path>` to install a locally built binary.
+- Update to latest: `mdmcpcfg update` (flags: `--channel stable|beta`, `--force`)
+  • Rollback is not yet implemented (`--rollback` will report unimplemented).
+- Uninstall: no dedicated command. To remove manually:
+  1) Stop clients using the server (e.g., close Claude Desktop).
+  2) Delete the server binary from the mdmcp bin dir.
+  3) Remove policy/config directory if desired.
+  4) Remove the mdmcp entry from Claude Desktop config (see below).
+
+Claude Desktop Integration
+- `mdmcpcfg install` adds an entry to Claude Desktop’s config pointing at mdmcpsrvr with `--config <policy> --stdio`.
+- Config paths (typical):
+  • Windows: `%APPDATA%/Claude/claude_desktop_config.json`
+  • macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
+  • Linux: `~/.config/Claude/claude_desktop_config.json`
+
+Using the MCP Tools
+- File I/O: `read_file`, `write_file` operate within allowed roots.
+- Commands: `run_command` executes catalog entries from the policy.
+- Discoverability:
+  • `list_accessible_directories` — shows allowed roots.
+  • `list_available_commands` — shows command catalog details (including `description` when set).
+- Management:
+  • `server_info` — version, build, policy summary, policy format.
+  • `reload_policy` — reloads the policy file without restart.
+
+Policy Authoring Tips
+- Start from defaults (`mdmcpcfg install` creates a sensible policy).
+- Keep `deny_network_fs: true` unless you explicitly need network mounts.
+- Restrict `allowed_roots` to the folders you actually use.
+- Prefer fixed/allow args for commands; use regex patterns carefully.
+- Never put secrets into logs.
+
+Examples
+- Add a dev workspace and allow writes:
+  `mdmcpcfg policy add-root "<your_dev_dir>" --write`
+- Add Cargo (Windows):
+  `mdmcpcfg policy add-command cargo --exec C:/Users/<you>/.cargo/bin/cargo.exe`
+- Add Git (Windows):
+  `mdmcpcfg policy add-command git --exec C:/Program Files/Git/bin/git.exe`
+- Build a project from Claude:
+  Use `cmd.run` with `commandId: "cargo"`, `args: ["build"]`, and set `cwd` to your project folder.
+
+Notes
+- The server runs commands directly (no implicit shell). Use `cmd.exe /c` or `/bin/sh -c` in a policy command if you need shell features.
+- On Windows/MSVC, the server bootstraps VS variables automatically (vcvars) for cargo/rustc so linking works like your normal shell.
+"#,
                     version,
                     build_str,
                     &policy.policy_hash[..16],
@@ -1700,6 +1770,7 @@ mod tests {
                 } else {
                     "/bin/echo".to_string()
                 },
+                description: None,
                 args: ArgsPolicy {
                     allow: vec!["test".to_string()],
                     fixed: if cfg!(windows) {

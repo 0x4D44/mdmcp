@@ -1042,6 +1042,7 @@ fn create_default_policy_content() -> Result<String> {
         commands.push(CommandRule {
             id: "ls".into(),
             exec: "/bin/ls".into(),
+            description: None,
             args: ArgsPolicy {
                 allow: vec![
                     "-l".into(),
@@ -1063,6 +1064,7 @@ fn create_default_policy_content() -> Result<String> {
         commands.push(CommandRule {
             id: "cat".into(),
             exec: "/bin/cat".into(),
+            description: None,
             args: ArgsPolicy {
                 allow: vec![],
                 fixed: vec![],
@@ -1082,6 +1084,7 @@ fn create_default_policy_content() -> Result<String> {
         let windows_cmd = |id: &str, sub: &str| CommandRule {
             id: id.into(),
             exec: "C:/Windows/System32/cmd.exe".into(),
+            description: None,
             args: ArgsPolicy {
                 allow: vec![],
                 fixed: vec!["/c".into(), sub.into()],
@@ -1109,6 +1112,7 @@ fn create_default_policy_content() -> Result<String> {
         let win_exec = |id: &str, path: &str, timeout: u64, max_bytes: u64| CommandRule {
             id: id.into(),
             exec: path.into(),
+            description: None,
             args: ArgsPolicy {
                 allow: vec![],
                 fixed: vec![],

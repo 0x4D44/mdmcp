@@ -15,6 +15,44 @@ use tokio::process::{Child, Command};
 use tokio::time::timeout;
 use tracing::{debug, warn};
 
+#[cfg(windows)]
+fn expand_windows_placeholders(input: &str) -> String {
+    // Expand %VAR% tokens using the current process environment.
+    // This is a best-effort expansion; unknown vars are left as-is.
+    let mut out = String::with_capacity(input.len());
+    let bytes = input.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            // Find closing %
+            if let Some(j) = bytes[i + 1..].iter().position(|&b| b == b'%') {
+                let end = i + 1 + j;
+                let name = &input[i + 1..end];
+                if !name.is_empty() {
+                    // Environment variables on Windows are case-insensitive
+                    let val = std::env::vars()
+                        .find(|(k, _)| k.eq_ignore_ascii_case(name))
+                        .map(|(_, v)| v);
+                    if let Some(v) = val {
+                        out.push_str(&v);
+                        i = end + 1;
+                        continue;
+                    }
+                }
+                // No expansion found; keep literal
+                out.push('%');
+                out.push_str(name);
+                out.push('%');
+                i = end + 1;
+                continue;
+            }
+        }
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+    out
+}
+
 #[derive(Error, Debug)]
 pub enum SandboxError {
     #[error("Command execution failed: {0}")]
@@ -528,11 +566,39 @@ pub fn filter_environment(
 
     // Add allowed environment variables
     for key in allowlist {
-        if let Some(value) = requested_env.get(key) {
-            filtered.insert(key.clone(), value.clone());
-        } else if let Ok(value) = std::env::var(key) {
-            // Fall back to system environment if not provided in request
-            filtered.insert(key.clone(), value);
+        // Prefer requested env if provided, but expand Windows-style placeholders.
+        let mut chosen: Option<String> = None;
+        if let Some(req_val) = requested_env.get(key) {
+            #[cfg(windows)]
+            {
+                let expanded = expand_windows_placeholders(req_val);
+                if expanded != *req_val {
+                    chosen = Some(expanded);
+                } else if req_val == &format!("%{}%", key) {
+                    // Request provided a self-referential placeholder; prefer system value if available
+                    if let Ok(sys_val) = std::env::var(key) {
+                        chosen = Some(sys_val);
+                    } else {
+                        chosen = Some(req_val.clone());
+                    }
+                } else {
+                    chosen = Some(req_val.clone());
+                }
+            }
+            #[cfg(not(windows))]
+            {
+                chosen = Some(req_val.clone());
+            }
+        }
+
+        if chosen.is_none() {
+            if let Ok(sys_val) = std::env::var(key) {
+                chosen = Some(sys_val);
+            }
+        }
+
+        if let Some(v) = chosen {
+            filtered.insert(key.clone(), v);
         }
     }
 

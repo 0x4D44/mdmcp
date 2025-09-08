@@ -323,6 +323,7 @@ commands:
             commands: vec![CommandRule {
                 id: "test".to_string(),
                 exec: "/bin/test".to_string(),
+                description: None,
                 args: ArgsPolicy::default(),
                 cwd_policy: mdmcp_policy::CwdPolicy::WithinRoot,
                 env_allowlist: vec![],

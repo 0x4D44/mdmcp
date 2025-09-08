@@ -415,6 +415,7 @@ mod tests {
                 } else {
                     "/bin/echo".to_string()
                 },
+                description: None,
                 args: ArgsPolicy {
                     allow: vec!["hello".to_string(), "world".to_string()],
                     fixed: vec![],
