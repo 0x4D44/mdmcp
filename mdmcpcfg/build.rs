@@ -1,18 +1,11 @@
 fn main() {
-    // Capture build time (epoch seconds) at compile time without external deps
-    let epoch = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    println!("cargo:rustc-env=BUILD_EPOCH={}", epoch);
-
     // Embed Windows version resource + icon (no-op on non-Windows)
     #[cfg(windows)]
     {
         embed_windows_resources(
-            "MDMCP MCP Server (policy-driven, sandboxed)",
-            "mdmcpsrvr",
-            "mdmcpsrvr.exe",
+            "MDMCP Config CLI (install, update, policy)",
+            "mdmcpcfg",
+            "mdmcpcfg.exe",
         );
     }
 }
@@ -34,7 +27,7 @@ fn embed_windows_resources(desc: &str, internal: &str, original: &str) {
     res.set("LegalCopyright", "(C) Martin Davidson 2025");
 
     // Icon if present
-    let icon_path = std::path::Path::new("res").join("mdmcpsrvr.ico");
+    let icon_path = std::path::Path::new("res").join("mdmcpcfg.ico");
     if icon_path.exists() {
         if let Some(p) = icon_path.to_str() {
             res.set_icon(p);

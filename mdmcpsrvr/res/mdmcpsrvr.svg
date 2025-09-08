@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="g1" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#274999"/>
+      <stop offset="100%" stop-color="#1E3A8A"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" fill="none"/>
+  <!-- Cube (isometric-style) -->
+  <!-- Top face -->
+  <polygon points="128,28 208,72 128,116 48,72" fill="#2d55a8"/>
+  <!-- Left face -->
+  <polygon points="48,72 128,116 128,200 48,156" fill="#162a6b"/>
+  <!-- Right face -->
+  <polygon points="208,72 128,116 128,200 208,156" fill="url(#g1)"/>
+  <!-- Edge highlight -->
+  <polyline points="48,72 128,116 208,72" fill="none" stroke="#3a63bf" stroke-width="4" opacity="0.4"/>
+
+  <!-- Lock (top-right) -->
+  <!-- Shackle -->
+  <path d="M182 92c-10 0-18 8-18 18v10h8v-10c0-6 4-10 10-10s10 4 10 10v10h8v-10c0-10-8-18-18-18z" fill="#ffffff"/>
+  <!-- Body -->
+  <rect x="168" y="120" width="56" height="48" rx="8" ry="8" fill="#ffffff"/>
+  <!-- Keyhole -->
+  <circle cx="196" cy="144" r="6" fill="#1E3A8A"/>
+  <rect x="194" y="150" width="4" height="12" rx="2" fill="#1E3A8A"/>
+</svg>

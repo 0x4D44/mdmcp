@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+build = "build.rs"
 
 [dependencies]
 anyhow = "1"
@@ -25,3 +26,6 @@ shellexpand = "3.1"
 which = "6.0"
 mdmcp_policy = { path = "../crates/mdmcp_policy" }
 mdmcp_common = { path = "../crates/mdmcp_common" }
+
+[build-dependencies]
+winres = { version = "0.1", optional = false }
