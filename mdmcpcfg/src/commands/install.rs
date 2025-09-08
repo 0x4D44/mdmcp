@@ -116,7 +116,12 @@ pub async fn run(
     let github = fetch_latest_release().await.ok();
     let local_detected = detect_local_server_binary();
     let local_info = if let Some(ref bin) = local_detected {
-        Some((bin.clone(), test_local_binary_version(bin).await.unwrap_or_else(|_| "unknown".into())))
+        Some((
+            bin.clone(),
+            test_local_binary_version(bin)
+                .await
+                .unwrap_or_else(|_| "unknown".into()),
+        ))
     } else {
         None
     };
@@ -187,7 +192,12 @@ pub async fn update(channel: String, rollback: bool, force: bool) -> Result<()> 
     };
     let local_detected = detect_local_server_binary();
     let local_info = if let Some(ref bin) = local_detected {
-        Some((bin.clone(), test_local_binary_version(bin).await.unwrap_or_else(|_| "unknown".into())))
+        Some((
+            bin.clone(),
+            test_local_binary_version(bin)
+                .await
+                .unwrap_or_else(|_| "unknown".into()),
+        ))
     } else {
         None
     };
@@ -230,7 +240,12 @@ pub async fn update(channel: String, rollback: bool, force: bool) -> Result<()> 
 
 /// Update from GitHub (extracted from original update logic)
 /// If `preconfirmed` is true, skip interactive prompts and extra version prints
-async fn update_from_github(channel: String, paths: &Paths, force: bool, preconfirmed: bool) -> Result<()> {
+async fn update_from_github(
+    channel: String,
+    paths: &Paths,
+    force: bool,
+    preconfirmed: bool,
+) -> Result<()> {
     // Fetch latest release
     let release = if channel == "stable" {
         fetch_latest_release().await?
@@ -292,7 +307,12 @@ async fn update_from_github(channel: String, paths: &Paths, force: bool, preconf
 
 /// Update from local binary
 /// Update from local binary; if `preconfirmed` is true, skip extra prints
-async fn update_from_local_binary(paths: &Paths, source_binary: &Path, force: bool, preconfirmed: bool) -> Result<()> {
+async fn update_from_local_binary(
+    paths: &Paths,
+    source_binary: &Path,
+    force: bool,
+    preconfirmed: bool,
+) -> Result<()> {
     println!("📂 Updating from local binary: {}", source_binary.display());
 
     // Validate local binary
@@ -826,15 +846,18 @@ async fn fetch_latest_prerelease() -> Result<GitHubRelease> {
 }
 
 /// Download the appropriate binary for the current platform, matching a specific artifact prefix
-async fn download_binary(release: &GitHubRelease, wanted_prefix: &str, dest_path: &Path) -> Result<()> {
+async fn download_binary(
+    release: &GitHubRelease,
+    wanted_prefix: &str,
+    dest_path: &Path,
+) -> Result<()> {
     let platform = get_platform_string();
     let wanted_lower = wanted_prefix.to_ascii_lowercase();
 
     // Prefer assets that match both the wanted prefix (e.g., mdmcpsrvr) and platform triplet
-    let mut chosen: Option<&GitHubAsset> = release
-        .assets
-        .iter()
-        .find(|a| a.name.to_ascii_lowercase().contains(&wanted_lower) && a.name.contains(&platform));
+    let mut chosen: Option<&GitHubAsset> = release.assets.iter().find(|a| {
+        a.name.to_ascii_lowercase().contains(&wanted_lower) && a.name.contains(&platform)
+    });
 
     // Fallback: match wanted prefix only (last resort if platform suffix naming differs)
     if chosen.is_none() {

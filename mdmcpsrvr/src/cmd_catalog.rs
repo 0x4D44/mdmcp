@@ -78,8 +78,7 @@ impl CommandCatalog {
             })?;
 
         // Enforce that any path-like arguments resolve within allowed roots
-        self
-            .enforce_path_scope(command, &params.args, validated_cwd.as_deref())
+        self.enforce_path_scope(command, &params.args, validated_cwd.as_deref())
             .map_err(|e| CatalogError::ArgumentValidation { reason: e })?;
 
         // Validate arguments against allow/patterns
