@@ -44,6 +44,19 @@ enum Commands {
         #[arg(long)]
         local_path: Option<String>,
     },
+    /// Internal: helper process to self-upgrade mdmcpcfg
+    #[command(hide = true)]
+    SelfUpgradeHelper {
+        /// PID of the parent mdmcpcfg process
+        #[arg(long)]
+        pid: u32,
+        /// Path to the original mdmcpcfg executable to replace
+        #[arg(long)]
+        orig: String,
+        /// Path to the new mdmcpcfg executable to install
+        #[arg(long)]
+        new: String,
+    },
     /// Update the MCP server binary
     Update {
         /// Update channel (stable, beta)
@@ -178,6 +191,10 @@ async fn main() -> Result<()> {
             // TODO: Implement run command for smoke testing
             println!("Running smoke test with {}", jsonrpc_file);
             Ok(())
+        }
+        Commands::SelfUpgradeHelper { pid, orig, new } => {
+            // Delegate to self-update helper logic
+            commands::install::run_self_upgrade_helper(pid, orig, new)
         }
     }
 }

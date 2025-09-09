@@ -29,3 +29,6 @@ mdmcp_common = { path = "../crates/mdmcp_common" }
 
 [build-dependencies]
 winres = { version = "0.1", optional = false }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_Console"] }

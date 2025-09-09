@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
 
 use crate::io::{is_executable, write_file, ClaudeDesktopConfig, Paths};
+use std::process::Command;
+use std::time::{Duration, Instant};
 
 // GitHub repository for releases
 const GITHUB_RELEASES_LATEST: &str = "https://api.github.com/repos/0x4D44/mdmcp/releases/latest";
@@ -165,7 +167,10 @@ pub async fn update(channel: String, rollback: bool, force: bool) -> Result<()> 
         bail!("Rollback functionality not yet implemented");
     }
 
-    println!("🔧 Updating mdmcp MCP server (channel: {})...", channel);
+    println!(
+        "🔧 Updating mdmcp MCP server and CLI (channel: {})...",
+        channel
+    );
 
     // Check current version
     if let Some(current_info) = InstallationInfo::load(&paths)? {
@@ -283,7 +288,7 @@ async fn update_from_github(
         println!("📦 Installing version: {}", release.tag_name);
     }
 
-    // Backup current binary
+    // Backup current server binary
     let binary_path = paths.server_binary();
     let backup_path = binary_path.with_extension("bak");
     if binary_path.exists() {
@@ -291,7 +296,7 @@ async fn update_from_github(
         fs::copy(&binary_path, &backup_path).context("Failed to create backup")?;
     }
 
-    // Download new binary
+    // Download new server binary
     // Download the server binary specifically
     download_binary(&release, "mdmcpsrvr", &binary_path).await?;
 
@@ -304,8 +309,12 @@ async fn update_from_github(
         println!("⚠️  Failed to refresh core policy: {}", e);
     }
 
-    println!("✅ Update completed successfully!");
-    println!("   New version: {}", release.tag_name);
+    // Attempt self-update of mdmcpcfg
+    if let Err(e) = download_and_self_update_mdmcpcfg(&release).await {
+        println!("⚠️  mdmcpcfg self-update skipped: {}", e);
+    }
+
+    println!("✅ Server update completed. mdmcpcfg will relaunch if self-updated.");
 
     Ok(())
 }
@@ -403,9 +412,12 @@ async fn update_from_local_binary(
         println!("⚠️  Failed to refresh core policy: {}", e);
     }
 
-    println!("✅ Local update completed successfully!");
-    println!("   New version: {} (local)", version);
-    println!("   Binary: {}", binary_path.display());
+    // Try to self-update mdmcpcfg from the same directory as source_binary (if present)
+    if let Err(e) = try_self_update_from_local_tool(source_binary).await {
+        println!("ℹ️  mdmcpcfg self-update from local source skipped: {}", e);
+    }
+
+    println!("✅ Local server update complete. mdmcpcfg will relaunch if self-updated.");
 
     Ok(())
 }
@@ -622,6 +634,215 @@ fn parse_version_from_output(output: &str) -> Option<String> {
     }
 
     None
+}
+
+/// Internal: Spawn a helper process (copy of current mdmcpcfg) that replaces the original exe with a new one
+pub fn run_self_upgrade_helper(pid: u32, orig: String, new: String) -> Result<()> {
+    println!("🔁 mdmcpcfg self-upgrade helper starting...");
+
+    let orig_path = PathBuf::from(orig);
+    let new_path = PathBuf::from(new);
+    #[cfg(not(windows))]
+    let _ = pid;
+
+    // Wait for the parent process (pid) to exit on Windows, otherwise proceed after a brief delay
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+        use windows_sys::Win32::System::Threading::{
+            GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if handle != std::ptr::null_mut() {
+                loop {
+                    let mut code: u32 = 0;
+                    if GetExitCodeProcess(handle, &mut code as *mut u32) == 0 {
+                        break; // unable to query; assume gone
+                    }
+                    if code != (STILL_ACTIVE as u32) {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(200));
+                }
+                CloseHandle(handle);
+            } else {
+                // Could not open process - likely already exited
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        // Give parent a moment to exit to avoid race conditions
+        std::thread::sleep(Duration::from_millis(300));
+    }
+
+    // Try to replace the original with retries
+    let timeout = Duration::from_secs(30);
+    let start = Instant::now();
+    let mut replaced = false;
+    while start.elapsed() < timeout {
+        // Best effort: remove original if possible
+        let mut removed = false;
+        if orig_path.exists() {
+            match std::fs::remove_file(&orig_path) {
+                Ok(_) => removed = true,
+                Err(_) => {
+                    // Might still be locked; wait and retry
+                }
+            }
+        } else {
+            removed = true;
+        }
+
+        if removed {
+            // Try to move new into place
+            if std::fs::rename(&new_path, &orig_path).is_ok() {
+                replaced = true;
+                break;
+            }
+            // Fallback: copy and then remove temp
+            if std::fs::copy(&new_path, &orig_path).is_ok() {
+                let _ = std::fs::remove_file(&new_path);
+                replaced = true;
+                break;
+            }
+        }
+
+        std::thread::sleep(Duration::from_millis(200));
+    }
+
+    if replaced {
+        println!("✅ mdmcpcfg replaced successfully: {}", orig_path.display());
+    } else {
+        println!("⚠️  Could not replace mdmcpcfg within timeout; continuing with existing binary");
+    }
+
+    // Respawn mdmcpcfg (the original path), show version and exit
+    let _ = Command::new(&orig_path).arg("--version").spawn();
+    Ok(())
+}
+
+/// Download mdmcpcfg to a temp directory and spawn helper to replace this process
+async fn download_and_self_update_mdmcpcfg(release: &GitHubRelease) -> Result<()> {
+    let temp_dir = std::env::temp_dir().join(format!("mdmcp-update-{}", std::process::id()));
+    std::fs::create_dir_all(&temp_dir).ok();
+
+    let is_win = cfg!(target_os = "windows");
+    let cfg_name = if is_win { "mdmcpcfg.exe" } else { "mdmcpcfg" };
+    let helper_name = if is_win {
+        "mdmcpcfg-helper.exe"
+    } else {
+        "mdmcpcfg-helper"
+    };
+
+    let new_cfg_path = temp_dir.join(cfg_name);
+    // Download the CLI binary
+    download_binary(release, "mdmcpcfg", &new_cfg_path).await?;
+
+    // Verify downloaded binary can run --version
+    if !is_executable(&new_cfg_path) {
+        bail!(
+            "Downloaded mdmcpcfg is not executable: {}",
+            new_cfg_path.display()
+        );
+    }
+    // Optional: sanity check version
+    let _ = Command::new(&new_cfg_path).arg("--version").output();
+
+    // Prepare helper: copy current exe to temp
+    let current_exe = std::env::current_exe().context("Failed to get current executable path")?;
+    let helper_path = temp_dir.join(helper_name);
+    std::fs::copy(&current_exe, &helper_path).with_context(|| {
+        format!(
+            "Failed to copy helper to temp: {} -> {}",
+            current_exe.display(),
+            helper_path.display()
+        )
+    })?;
+
+    println!("🔁 Preparing to self-update mdmcpcfg...");
+
+    // Spawn helper and exit
+    let mut cmd = Command::new(&helper_path);
+    cmd.arg("self-upgrade-helper")
+        .arg("--pid")
+        .arg(std::process::id().to_string())
+        .arg("--orig")
+        .arg(current_exe.to_string_lossy().to_string())
+        .arg("--new")
+        .arg(new_cfg_path.to_string_lossy().to_string());
+    let _ = cmd.spawn().context("Failed to spawn self-upgrade helper")?;
+
+    println!("➡️  Relaunching mdmcpcfg via helper and exiting...");
+    std::process::exit(0);
+}
+
+/// Attempt to self-update mdmcpcfg using a local binary located next to the provided server binary
+async fn try_self_update_from_local_tool(server_source_binary: &Path) -> Result<()> {
+    let dir = server_source_binary
+        .parent()
+        .context("No parent directory for local binary")?;
+    let candidate = if cfg!(target_os = "windows") {
+        dir.join("mdmcpcfg.exe")
+    } else {
+        dir.join("mdmcpcfg")
+    };
+    if !candidate.exists() {
+        bail!("No local mdmcpcfg found at {}", candidate.display());
+    }
+    if !is_executable(&candidate) {
+        bail!("Local mdmcpcfg is not executable: {}", candidate.display());
+    }
+
+    // Copy candidate to temp and spawn helper to replace current exe
+    let temp_dir = std::env::temp_dir().join(format!("mdmcp-update-{}", std::process::id()));
+    std::fs::create_dir_all(&temp_dir).ok();
+    let cfg_name = if cfg!(target_os = "windows") {
+        "mdmcpcfg.exe"
+    } else {
+        "mdmcpcfg"
+    };
+    let helper_name = if cfg!(target_os = "windows") {
+        "mdmcpcfg-helper.exe"
+    } else {
+        "mdmcpcfg-helper"
+    };
+    let new_cfg_path = temp_dir.join(cfg_name);
+    std::fs::copy(&candidate, &new_cfg_path).with_context(|| {
+        format!(
+            "Failed to stage mdmcpcfg into temp: {} -> {}",
+            candidate.display(),
+            new_cfg_path.display()
+        )
+    })?;
+
+    // Prepare helper
+    let current_exe = std::env::current_exe().context("Failed to get current executable path")?;
+    let helper_path = temp_dir.join(helper_name);
+    std::fs::copy(&current_exe, &helper_path).with_context(|| {
+        format!(
+            "Failed to copy helper to temp: {} -> {}",
+            current_exe.display(),
+            helper_path.display()
+        )
+    })?;
+
+    println!("🔁 Preparing to self-update mdmcpcfg from local binary...");
+
+    // Spawn helper and exit
+    let mut cmd = Command::new(&helper_path);
+    cmd.arg("self-upgrade-helper")
+        .arg("--pid")
+        .arg(std::process::id().to_string())
+        .arg("--orig")
+        .arg(current_exe.to_string_lossy().to_string())
+        .arg("--new")
+        .arg(new_cfg_path.to_string_lossy().to_string());
+    let _ = cmd.spawn().context("Failed to spawn self-upgrade helper")?;
+    println!("➡️  Relaunching mdmcpcfg via helper and exiting...");
+    std::process::exit(0);
 }
 
 /// Set executable permissions on Unix systems
