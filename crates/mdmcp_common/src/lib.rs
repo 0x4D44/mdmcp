@@ -83,46 +83,86 @@ impl From<McpErrorCode> for i32 {
     }
 }
 
-/// Parameters for fs.read method
+/// Parameters for fs.read method (enhanced)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FsReadParams {
     pub path: String,
-    #[serde(default)]
-    pub offset: u64,
-    #[serde(default = "default_read_length")]
-    pub length: u64,
     #[serde(default = "default_encoding")]
-    pub encoding: String,
+    pub encoding: String, // utf8|base64
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub offset: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub length: Option<u64>,
+    #[serde(rename = "line_offset", skip_serializing_if = "Option::is_none")]
+    pub line_offset: Option<u64>,
+    #[serde(rename = "line_count", skip_serializing_if = "Option::is_none")]
+    pub line_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>, // full|partial|tail|head|lines
+    #[serde(rename = "include_stats", skip_serializing_if = "Option::is_none")]
+    pub include_stats: Option<bool>,
 }
 
-/// Result of fs.read method
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct FsReadMetadata {
+    #[serde(rename = "file_size")]
+    pub file_size: u64,
+    #[serde(rename = "byte_start")]
+    pub byte_start: u64,
+    #[serde(rename = "byte_count")]
+    pub byte_count: u64,
+    #[serde(rename = "line_start", skip_serializing_if = "Option::is_none")]
+    pub line_start: Option<u64>,
+    #[serde(rename = "line_count", skip_serializing_if = "Option::is_none")]
+    pub line_count: Option<u64>,
+    #[serde(rename = "total_lines", skip_serializing_if = "Option::is_none")]
+    pub total_lines: Option<u64>,
+    #[serde(rename = "word_count", skip_serializing_if = "Option::is_none")]
+    pub word_count: Option<u64>,
+    #[serde(rename = "char_count", skip_serializing_if = "Option::is_none")]
+    pub char_count: Option<u64>,
+    #[serde(
+        rename = "char_count_no_whitespace",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub char_count_no_whitespace: Option<u64>,
+    pub truncated: bool,
+    #[serde(rename = "actual_offset", skip_serializing_if = "Option::is_none")]
+    pub actual_offset: Option<u64>,
+}
+
+/// Result of fs.read method (enhanced)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FsReadResult {
-    pub data: String,
-    #[serde(rename = "bytesRead")]
-    pub bytes_read: u64,
-    pub sha256: String,
+    pub content: String,
+    pub metadata: FsReadMetadata,
 }
 
-/// Parameters for fs.write method
+/// Parameters for fs.write method (enhanced)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FsWriteParams {
     pub path: String,
     pub data: String,
     #[serde(default = "default_encoding")]
-    pub encoding: String,
+    pub encoding: String, // utf8|base64
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub offset: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>, // overwrite|insert|append|patch
     #[serde(default)]
     pub create: bool,
     #[serde(default)]
-    pub overwrite: bool,
+    pub atomic: bool,
 }
 
-/// Result of fs.write method
+/// Result of fs.write method (enhanced)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FsWriteResult {
-    #[serde(rename = "bytesWritten")]
+    #[serde(rename = "bytes_written")]
     pub bytes_written: u64,
-    pub sha256: String,
+    #[serde(rename = "file_size")]
+    pub file_size: u64,
+    pub created: bool,
 }
 
 /// Parameters for cmd.run method
@@ -226,9 +266,7 @@ pub struct ServerInfo {
     pub version: String,
 }
 
-fn default_read_length() -> u64 {
-    1_048_576 // 1MB default
-}
+// default_read_length removed (length now optional)
 
 fn default_encoding() -> String {
     "utf8".to_string()
@@ -382,8 +420,8 @@ mod tests {
     fn test_fs_read_params_defaults() {
         let json = r#"{"path": "/test"}"#;
         let params: FsReadParams = serde_json::from_str(json).unwrap();
-        assert_eq!(params.offset, 0);
-        assert_eq!(params.length, 1_048_576);
+        assert_eq!(params.offset, None);
+        assert_eq!(params.length, None);
         assert_eq!(params.encoding, "utf8");
     }
 

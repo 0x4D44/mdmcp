@@ -118,6 +118,9 @@ impl GuardedFileReader {
 
         Ok((buffer, hash))
     }
+    pub fn file_len(&self) -> Result<u64, FsError> {
+        Ok(self.file.metadata()?.len())
+    }
 }
 
 /// Safe file writer with policy enforcement
@@ -271,7 +274,7 @@ impl Drop for GuardedFileWriter {
 }
 
 /// Canonicalize path, handling the case where the path might not exist
-fn canonicalize_path(path: &Path) -> Result<PathBuf> {
+pub(crate) fn canonicalize_path(path: &Path) -> Result<PathBuf> {
     if let Ok(canonical) = dunce::canonicalize(path) {
         Ok(canonical)
     } else {
@@ -357,7 +360,7 @@ fn get_file_type_description(path: &Path) -> String {
 
 /// Platform-specific network filesystem detection
 #[cfg(target_os = "linux")]
-fn is_network_fs(path: &Path) -> Result<bool, FsError> {
+pub(crate) fn is_network_fs(path: &Path) -> Result<bool, FsError> {
     // Try to read /proc/mounts to detect network filesystems
     let mounts = std::fs::read_to_string("/proc/mounts").unwrap_or_default();
     let path_str = path.to_string_lossy();
@@ -419,7 +422,7 @@ fn is_network_fs(path: &Path) -> Result<bool, FsError> {
 }
 
 #[cfg(target_os = "windows")]
-fn is_network_fs(path: &Path) -> Result<bool, FsError> {
+pub(crate) fn is_network_fs(path: &Path) -> Result<bool, FsError> {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
 
@@ -450,7 +453,7 @@ fn is_network_fs(path: &Path) -> Result<bool, FsError> {
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-fn is_network_fs(_path: &Path) -> Result<bool, FsError> {
+pub(crate) fn is_network_fs(_path: &Path) -> Result<bool, FsError> {
     // Conservative approach: assume it might be network FS on unknown platforms
     warn!("Network filesystem detection not implemented for this platform");
     Ok(false)

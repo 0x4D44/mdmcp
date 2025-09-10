@@ -16,11 +16,12 @@ use crate::rpc::{
 use anyhow::{Context, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use mdmcp_common::{
-    CmdRunParams, CmdRunResult, FsReadParams, FsReadResult, FsWriteParams, FsWriteResult,
-    InitializeParams, InitializeResult, McpErrorCode, PromptArgument, PromptContent, PromptInfo,
-    PromptMessage, PromptsGetParams, PromptsGetResult, PromptsListParams, PromptsListResult,
-    ResourceContent, ResourceInfo, ResourcesListParams, ResourcesListResult, ResourcesReadParams,
-    ResourcesReadResult, RpcId, RpcRequest, RpcResponse, ServerCapabilities, ServerInfo,
+    CmdRunParams, CmdRunResult, FsReadMetadata, FsReadParams, FsReadResult, FsWriteParams,
+    FsWriteResult, InitializeParams, InitializeResult, McpErrorCode, PromptArgument, PromptContent,
+    PromptInfo, PromptMessage, PromptsGetParams, PromptsGetResult, PromptsListParams,
+    PromptsListResult, ResourceContent, ResourceInfo, ResourcesListParams, ResourcesListResult,
+    ResourcesReadParams, ResourcesReadResult, RpcId, RpcRequest, RpcResponse, ServerCapabilities,
+    ServerInfo,
 };
 use mdmcp_policy::{CompiledPolicy, Policy};
 use serde_json::Value;
@@ -244,59 +245,61 @@ impl Server {
         let tools = serde_json::json!({
             "tools": [
                 {
-                    "name": "read_file",
-                    "description": "Read file contents from the filesystem",
+                    "name": "read_bytes",
+                    "description": "Read bytes from a file (simple): {path, offset?, length?, encoding?}",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
-                            "path": {
-                                "type": "string",
-                                "description": "Path to the file to read"
-                            },
-                            "encoding": {
-                                "type": "string",
-                                "enum": ["utf8", "base64"],
-                                "default": "utf8",
-                                "description": "File encoding"
-                            }
+                            "path": {"type": "string"},
+                            "offset": {"type": ["integer","null"], "description": "Byte offset"},
+                            "length": {"type": ["integer","null"], "description": "Byte length"},
+                            "encoding": {"type": "string", "enum": ["utf8","base64"], "default": "utf8"}
+                        },
+                        "required": ["path"]
+                    }
+                },
+                {
+                    "name": "read_lines",
+                    "description": "Read lines from a file (simple): {path, line_offset?, line_count?, encoding?}",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string"},
+                            "line_offset": {"type": ["integer","null"], "description": "Line start (0-index)"},
+                            "line_count": {"type": ["integer","null"], "description": "Number of lines"},
+                            "encoding": {"type": "string", "enum": ["utf8","base64"], "default": "utf8"}
                         },
                         "required": ["path"]
                     }
                 },
                 {
                     "name": "write_file",
-                    "description": "Write data to a file",
+                    "description": "Write to a file (simple): {path, data, append?, create?, overwrite?, encoding?}",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
-                            "path": {
-                                "type": "string",
-                                "description": "Path to the file to write"
-                            },
-                            "data": {
-                                "type": "string",
-                                "description": "Data to write to the file"
-                            },
-                            "encoding": {
-                                "type": "string",
-                                "enum": ["utf8", "base64"],
-                                "default": "utf8",
-                                "description": "Data encoding"
-                            },
-                            "create": {
-                                "type": "boolean",
-                                "default": true,
-                                "description": "Create file if it doesn't exist"
-                            },
-                            "overwrite": {
-                                "type": "boolean",
-                                "default": true,
-                                "description": "Overwrite file if it exists"
-                            }
+                            "path": {"type": "string"},
+                            "data": {"type": "string"},
+                            "append": {"type": ["boolean","null"], "default": false},
+                            "create": {"type": ["boolean","null"], "default": true},
+                            "overwrite": {"type": ["boolean","null"], "default": true},
+                            "encoding": {"type": "string", "enum": ["utf8","base64"], "default": "utf8"}
                         },
-                        "required": ["path", "data"]
+                        "required": ["path","data"]
                     }
                 },
+                {
+                    "name": "stat_path",
+                    "description": "Get file/directory info: {path}",
+                    "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}
+                },
+                {
+                    "name": "list_directory",
+                    "description": "List directory entries: {path}",
+                    "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}
+                },
+
+
                 {
                     "name": "run_command",
                     "description": "Execute a command from the policy-defined catalog",
@@ -394,19 +397,17 @@ impl Server {
         debug!("tools/call: tool={}, args={:?}", tool_name, tool_args);
         // Dispatch to the appropriate tool implementation
         match tool_name {
-            "read_file" => {
-                // Convert tool args to fs.read format
-                let encoding = tool_args
-                    .get("encoding")
-                    .cloned()
-                    .unwrap_or(serde_json::json!("utf8"));
+            "read_bytes" => {
                 let fs_params = serde_json::json!({
                     "path": tool_args.get("path"),
-                    "encoding": encoding,
-                    "offset": 0,
-                    "length": 1_000_000 // Max length
+                    "encoding": tool_args.get("encoding").cloned().unwrap_or(serde_json::json!("utf8")),
+                    "offset": tool_args.get("offset").cloned().unwrap_or(serde_json::Value::Null),
+                    "length": tool_args.get("length").cloned().unwrap_or(serde_json::Value::Null),
+                    "mode": serde_json::Value::Null,
+                    "line_offset": serde_json::Value::Null,
+                    "line_count": serde_json::Value::Null,
+                    "include_stats": serde_json::Value::Null
                 });
-                // Execute fs.read then adapt to tools/call content blocks
                 let resp = self.handle_fs_read(ctx, id.clone(), fs_params).await;
                 if let Some(err) = &resp.error {
                     return create_error_response(
@@ -439,32 +440,103 @@ impl Server {
                         )
                     }
                 };
-                let mut content_blocks: Vec<serde_json::Value> = Vec::new();
-                content_blocks.push(serde_json::json!({
-                    "type": "text",
-                    "text": read_out.data,
-                }));
-                content_blocks.push(serde_json::json!({
-                    "type": "text",
-                    "text": format!("[note] bytes={}, sha256={}", read_out.bytes_read, read_out.sha256),
-                }));
                 let result = serde_json::json!({
-                    "content": content_blocks,
+                    "content": [{"type":"text","text": read_out.content}],
                     "isError": false
                 });
                 self.auditor.log_success(ctx, SuccessDetails::default());
                 create_success_response(id, result)
             }
+            "read_lines" => {
+                let fs_params = serde_json::json!({
+                    "path": tool_args.get("path"),
+                    "encoding": tool_args.get("encoding").cloned().unwrap_or(serde_json::json!("utf8")),
+                    "line_offset": tool_args.get("line_offset").cloned().unwrap_or(serde_json::Value::Null),
+                    "line_count": tool_args.get("line_count").cloned().unwrap_or(serde_json::Value::Null),
+                    "mode": "lines",
+                    "offset": serde_json::Value::Null,
+                    "length": serde_json::Value::Null,
+                    "include_stats": serde_json::Value::Null
+                });
+                let resp = self.handle_fs_read(ctx, id.clone(), fs_params).await;
+                if let Some(err) = &resp.error {
+                    return create_error_response(
+                        id,
+                        McpErrorCode::Internal,
+                        Some(err.message.clone()),
+                        resp.error.as_ref().and_then(|e| e.data.clone()),
+                    );
+                }
+                let raw = match resp.result {
+                    Some(v) => v,
+                    None => {
+                        return create_error_response(
+                            id,
+                            McpErrorCode::Internal,
+                            Some("fs.read returned no result".to_string()),
+                            None,
+                        )
+                    }
+                };
+                let parsed: Result<mdmcp_common::FsReadResult, _> = serde_json::from_value(raw);
+                let read_out = match parsed {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return create_error_response(
+                            id,
+                            McpErrorCode::Internal,
+                            Some(format!("Failed to parse fs.read result: {}", e)),
+                            None,
+                        )
+                    }
+                };
+                let result = serde_json::json!({
+                    "content": [{"type":"text","text": read_out.content}],
+                    "isError": false
+                });
+                self.auditor.log_success(ctx, SuccessDetails::default());
+                create_success_response(id, result)
+            }
+
             "write_file" => {
-                // Convert tool args to fs.write format
+                // Simple writer: supports append/create/overwrite booleans
+                let append = tool_args
+                    .get("append")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let create = tool_args
+                    .get("create")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+                let overwrite = tool_args
+                    .get("overwrite")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+                let mode = if append {
+                    serde_json::json!("append")
+                } else {
+                    serde_json::Value::Null
+                };
                 let fs_params = serde_json::json!({
                     "path": tool_args.get("path"),
                     "data": tool_args.get("data"),
-                    "encoding": tool_args.get("encoding").unwrap_or(&serde_json::json!("utf8")),
-                    "create": tool_args.get("create").unwrap_or(&serde_json::json!(true)),
-                    "overwrite": tool_args.get("overwrite").unwrap_or(&serde_json::json!(true))
+                    "encoding": tool_args.get("encoding").cloned().unwrap_or(serde_json::json!("utf8")),
+                    "create": create,
+                    "atomic": true,
+                    "mode": mode
                 });
-                // Execute fs.write then adapt to tools/call content blocks
+                if !overwrite {
+                    if let Some(p) = tool_args.get("path").and_then(|v| v.as_str()) {
+                        if std::path::Path::new(p).exists() && !append {
+                            return create_error_response(
+                                id,
+                                McpErrorCode::InvalidArgs,
+                                Some("File exists and overwrite=false".to_string()),
+                                None,
+                            );
+                        }
+                    }
+                }
                 let resp = self.handle_fs_write(ctx, id.clone(), fs_params).await;
                 if let Some(err) = &resp.error {
                     return create_error_response(
@@ -498,15 +570,150 @@ impl Server {
                     }
                 };
                 let result = serde_json::json!({
-                    "content": [{
-                        "type": "text",
-                        "text": format!("Write successful. bytesWritten={}, sha256={}", write_out.bytes_written, write_out.sha256)
-                    }],
+                    "content": [{"type":"text","text": format!("Write OK. bytesWritten={} newSize={} created={}", write_out.bytes_written, write_out.file_size, write_out.created)}],
                     "isError": false
                 });
                 self.auditor.log_success(ctx, SuccessDetails::default());
                 create_success_response(id, result)
             }
+            "stat_path" => {
+                let path = match tool_args.get("path").and_then(|v| v.as_str()) {
+                    Some(p) => p.to_string(),
+                    None => {
+                        return create_error_response(
+                            id,
+                            McpErrorCode::InvalidArgs,
+                            Some("Missing path".to_string()),
+                            None,
+                        )
+                    }
+                };
+                let policy = { self.policy.read().unwrap().clone() };
+                match crate::fs_safety::canonicalize_path(std::path::Path::new(&path)) {
+                    Ok(canon) => {
+                        if !policy
+                            .allowed_roots_canonical
+                            .iter()
+                            .any(|r| canon.starts_with(r))
+                        {
+                            return create_error_response(
+                                id,
+                                McpErrorCode::PolicyDeny,
+                                Some(format!("Path not allowed: {}", canon.display())),
+                                None,
+                            );
+                        }
+                        if policy.policy.deny_network_fs {
+                            if let Ok(true) = crate::fs_safety::is_network_fs(&canon) {
+                                return create_error_response(
+                                    id,
+                                    McpErrorCode::PolicyDeny,
+                                    Some("Network filesystem denied".to_string()),
+                                    None,
+                                );
+                            }
+                        }
+                        match std::fs::metadata(&canon) {
+                            Ok(m) => {
+                                let is_file = m.is_file();
+                                let is_dir = m.is_dir();
+                                let size = m.len();
+                                let mtime = m
+                                    .modified()
+                                    .ok()
+                                    .and_then(|t| t.elapsed().ok())
+                                    .map(|e| format!("{}s ago", e.as_secs()));
+                                let json = serde_json::json!({"path": canon.display().to_string(), "isFile": is_file, "isDir": is_dir, "size": size, "modified": mtime});
+                                let result = serde_json::json!({"content":[{"type":"text","text": json.to_string()}], "isError": false});
+                                self.auditor.log_success(ctx, SuccessDetails::default());
+                                create_success_response(id, result)
+                            }
+                            Err(e) => create_error_response(
+                                id,
+                                McpErrorCode::IoError,
+                                Some(format!("Stat error: {}", e)),
+                                None,
+                            ),
+                        }
+                    }
+                    Err(_) => create_error_response(
+                        id,
+                        McpErrorCode::InvalidArgs,
+                        Some("Invalid path".to_string()),
+                        None,
+                    ),
+                }
+            }
+            "list_directory" => {
+                let path = match tool_args.get("path").and_then(|v| v.as_str()) {
+                    Some(p) => p.to_string(),
+                    None => {
+                        return create_error_response(
+                            id,
+                            McpErrorCode::InvalidArgs,
+                            Some("Missing path".to_string()),
+                            None,
+                        )
+                    }
+                };
+                let policy = { self.policy.read().unwrap().clone() };
+                match crate::fs_safety::canonicalize_path(std::path::Path::new(&path)) {
+                    Ok(canon) => {
+                        if !policy
+                            .allowed_roots_canonical
+                            .iter()
+                            .any(|r| canon.starts_with(r))
+                        {
+                            return create_error_response(
+                                id,
+                                McpErrorCode::PolicyDeny,
+                                Some(format!("Path not allowed: {}", canon.display())),
+                                None,
+                            );
+                        }
+                        if policy.policy.deny_network_fs {
+                            if let Ok(true) = crate::fs_safety::is_network_fs(&canon) {
+                                return create_error_response(
+                                    id,
+                                    McpErrorCode::PolicyDeny,
+                                    Some("Network filesystem denied".to_string()),
+                                    None,
+                                );
+                            }
+                        }
+                        match std::fs::read_dir(&canon) {
+                            Ok(iter) => {
+                                let mut entries = Vec::new();
+                                for e in iter.flatten() {
+                                    let file_type = e.file_type().ok();
+                                    let is_dir =
+                                        file_type.as_ref().map(|t| t.is_dir()).unwrap_or(false);
+                                    let is_file =
+                                        file_type.as_ref().map(|t| t.is_file()).unwrap_or(false);
+                                    entries.push(serde_json::json!({"name": e.file_name().to_string_lossy(), "isDir": is_dir, "isFile": is_file}));
+                                }
+                                let json = serde_json::json!({"path": canon.display().to_string(), "entries": entries});
+                                let result = serde_json::json!({"content":[{"type":"text","text": json.to_string()}], "isError": false});
+                                self.auditor.log_success(ctx, SuccessDetails::default());
+                                create_success_response(id, result)
+                            }
+                            Err(e) => create_error_response(
+                                id,
+                                McpErrorCode::IoError,
+                                Some(format!("list error: {}", e)),
+                                None,
+                            ),
+                        }
+                    }
+                    Err(_) => create_error_response(
+                        id,
+                        McpErrorCode::InvalidArgs,
+                        Some("Invalid path".to_string()),
+                        None,
+                    ),
+                }
+            }
+
             "run_command" => {
                 // Convert tool args to cmd.run format
                 let cmd_params = serde_json::json!({
@@ -1453,10 +1660,7 @@ Notes
                 );
             }
         };
-        debug!(
-            "fs.read: path={}, offset={}, length={}",
-            read_params.path, read_params.offset, read_params.length
-        );
+        debug!("fs.read: path={}", read_params.path);
         // Validate encoding
         if read_params.encoding != "utf8" && read_params.encoding != "base64" {
             let error_msg = format!("Unsupported encoding: {}", read_params.encoding);
@@ -1595,79 +1799,196 @@ Notes
                 );
             }
         };
-        // Read file content
-        match reader.read_with_limits(read_params.offset, read_params.length) {
-            Ok((data, hash)) => {
-                let (encoded_data, bytes_read) = match read_params.encoding.as_str() {
-                    "utf8" => match String::from_utf8(data.clone()) {
-                        Ok(utf8_data) => (utf8_data, data.len() as u64),
-                        Err(_) => {
-                            self.auditor.log_error(
-                                ctx,
-                                "Invalid UTF-8 data",
-                                Some(ErrorDetails {
-                                    path: Some(read_params.path.clone()),
-                                    ..Default::default()
-                                }),
-                            );
-                            return create_error_response(
-                                id.clone(),
-                                McpErrorCode::IoError,
-                                Some("File contains invalid UTF-8 data".to_string()),
-                                Some(self.build_error_data(
-                                    "fs.read",
-                                    &id,
-                                    "invalidUtf8",
-                                    serde_json::json!({
-                                        "path": read_params.path,
-                                        "detail": "Invalid UTF-8 data"
-                                    }),
-                                )),
-                            );
-                        }
-                    },
-                    "base64" => (BASE64.encode(&data), data.len() as u64),
-                    _ => unreachable!(), // Already validated above
-                };
-                let result = FsReadResult {
-                    data: encoded_data,
-                    bytes_read,
-                    sha256: hash.clone(),
-                };
-                self.auditor.log_success(
-                    ctx,
-                    SuccessDetails {
-                        path: Some(read_params.path.clone()),
-                        bytes: Some(bytes_read),
-                        content_hash: Some(hash),
+
+        // Enhanced read: lines precedence over bytes
+        let use_lines = read_params.line_offset.is_some()
+            || read_params.line_count.is_some()
+            || matches!(read_params.mode.as_deref(), Some("lines"));
+
+        let file_size = reader.file_len().unwrap_or(0);
+
+        if use_lines {
+            // Read all and slice lines
+            match reader.read_with_limits(0, file_size) {
+                Ok((buf, _)) => {
+                    let text = String::from_utf8_lossy(&buf);
+                    let lines: Vec<&str> = text.lines().collect();
+                    let total_lines = lines.len() as u64;
+                    let start = read_params.line_offset.unwrap_or(0);
+                    let count = read_params
+                        .line_count
+                        .unwrap_or(total_lines.saturating_sub(start));
+                    let start_idx = std::cmp::min(start, total_lines);
+                    let end_idx = std::cmp::min(start_idx + count, total_lines);
+                    let slice = lines[start_idx as usize..end_idx as usize].join("\n");
+                    let content = match read_params.encoding.as_str() {
+                        "utf8" => slice,
+                        "base64" => BASE64.encode(slice.as_bytes()),
+                        _ => unreachable!(),
+                    };
+                    let include_stats = read_params.include_stats.unwrap_or(false);
+                    let mut meta = FsReadMetadata {
+                        file_size,
+                        byte_start: 0,
+                        byte_count: content.len() as u64,
+                        line_start: Some(start_idx),
+                        line_count: Some(end_idx - start_idx),
+                        total_lines: if include_stats {
+                            Some(total_lines)
+                        } else {
+                            None
+                        },
+                        truncated: false,
+                        actual_offset: None,
                         ..Default::default()
-                    },
-                );
-                create_success_response(id, serde_json::to_value(result).unwrap())
-            }
-            Err(e) => {
-                self.auditor.log_error(
-                    ctx,
-                    &format!("Read error: {}", e),
-                    Some(ErrorDetails {
-                        path: Some(read_params.path.clone()),
-                        ..Default::default()
-                    }),
-                );
-                create_error_response(
-                    id.clone(),
-                    McpErrorCode::IoError,
-                    Some(format!("Read error: {}", e)),
-                    Some(self.build_error_data(
-                        "fs.read",
-                        &id,
-                        "ioError",
-                        serde_json::json!({
-                            "path": read_params.path,
-                            "detail": "Read error"
+                    };
+                    if include_stats && read_params.encoding == "utf8" {
+                        meta.word_count = Some(content.split_whitespace().count() as u64);
+                        meta.char_count = Some(content.chars().count() as u64);
+                        meta.char_count_no_whitespace =
+                            Some(content.chars().filter(|c| !c.is_whitespace()).count() as u64);
+                    }
+                    let result = FsReadResult {
+                        content,
+                        metadata: meta,
+                    };
+                    self.auditor.log_success(ctx, SuccessDetails::default());
+                    create_success_response(id, serde_json::to_value(result).unwrap())
+                }
+                Err(e) => {
+                    self.auditor.log_error(
+                        ctx,
+                        &format!("Read error: {}", e),
+                        Some(ErrorDetails {
+                            path: Some(read_params.path.clone()),
+                            ..Default::default()
                         }),
-                    )),
-                )
+                    );
+                    create_error_response(
+                        id.clone(),
+                        McpErrorCode::IoError,
+                        Some(format!("Read error: {}", e)),
+                        Some(self.build_error_data(
+                            "fs.read",
+                            &id,
+                            "ioError",
+                            serde_json::json!({
+                                "path": read_params.path,
+                                "detail": "Read error"
+                            }),
+                        )),
+                    )
+                }
+            }
+        } else {
+            // Byte mode with head/tail support
+            let mut offset = read_params.offset.unwrap_or(0);
+            let mut length = read_params
+                .length
+                .unwrap_or_else(|| policy.policy.limits.max_read_bytes);
+            if let Some(mode) = read_params
+                .mode
+                .as_deref()
+                .map(|s| s.to_ascii_lowercase())
+                .as_deref()
+            {
+                match mode {
+                    "head" => {
+                        offset = 0;
+                        if read_params.length.is_none() {
+                            const DEFAULT_HEAD: u64 = 8 * 1024;
+                            length = std::cmp::min(DEFAULT_HEAD, file_size);
+                        }
+                    }
+                    "tail" => {
+                        // default tail length if none provided
+                        if read_params.length.is_none() {
+                            const DEFAULT_TAIL: u64 = 8 * 1024;
+                            length = std::cmp::min(DEFAULT_TAIL, file_size);
+                        }
+                        if length > file_size {
+                            length = file_size;
+                        }
+                        offset = file_size.saturating_sub(length);
+                    }
+                    _ => {}
+                }
+            }
+            // Adjust UTF-8 boundary for utf8 encoding
+            let mut actual_offset = None;
+            if read_params.encoding == "utf8" && offset > 0 {
+                let back = std::cmp::min(4, offset as usize);
+                let adj_start = offset - back as u64;
+                if let Ok((probe, _)) = reader.read_with_limits(adj_start, back as u64) {
+                    for i in (0..=probe.len()).rev() {
+                        if std::str::from_utf8(&probe[i..]).is_ok() {
+                            actual_offset = Some(adj_start + i as u64);
+                            break;
+                        }
+                    }
+                }
+                if let Some(a) = actual_offset {
+                    offset = a;
+                }
+            }
+            match reader.read_with_limits(offset, length) {
+                Ok((buffer, _)) => {
+                    let truncated = (offset + buffer.len() as u64) < (offset + length)
+                        && (offset + length) < file_size;
+                    let content = match read_params.encoding.as_str() {
+                        "utf8" => String::from_utf8_lossy(&buffer).to_string(),
+                        "base64" => BASE64.encode(&buffer),
+                        _ => unreachable!(),
+                    };
+                    let mut meta = FsReadMetadata {
+                        file_size,
+                        byte_start: offset,
+                        byte_count: buffer.len() as u64,
+                        line_start: None,
+                        line_count: None,
+                        total_lines: None,
+                        truncated,
+                        actual_offset,
+                        ..Default::default()
+                    };
+                    let include_stats = read_params.include_stats.unwrap_or(false);
+                    if include_stats && read_params.encoding == "utf8" {
+                        meta.word_count = Some(content.split_whitespace().count() as u64);
+                        meta.char_count = Some(content.chars().count() as u64);
+                        meta.char_count_no_whitespace =
+                            Some(content.chars().filter(|c| !c.is_whitespace()).count() as u64);
+                    }
+                    let result = FsReadResult {
+                        content,
+                        metadata: meta,
+                    };
+                    self.auditor.log_success(ctx, SuccessDetails::default());
+                    create_success_response(id, serde_json::to_value(result).unwrap())
+                }
+                Err(e) => {
+                    self.auditor.log_error(
+                        ctx,
+                        &format!("Read error: {}", e),
+                        Some(ErrorDetails {
+                            path: Some(read_params.path.clone()),
+                            ..Default::default()
+                        }),
+                    );
+                    create_error_response(
+                        id.clone(),
+                        McpErrorCode::IoError,
+                        Some(format!("Read error: {}", e)),
+                        Some(self.build_error_data(
+                            "fs.read",
+                            &id,
+                            "ioError",
+                            serde_json::json!({
+                                "path": read_params.path,
+                                "detail": "Read error"
+                            }),
+                        )),
+                    )
+                }
             }
         }
     }
@@ -1686,10 +2007,7 @@ Notes
                 );
             }
         };
-        debug!(
-            "fs.write: path={}, create={}, overwrite={}",
-            write_params.path, write_params.create, write_params.overwrite
-        );
+        debug!("fs.write: path={}", write_params.path);
         // Decode data based on encoding
         let data = match write_params.encoding.as_str() {
             "utf8" => write_params.data.into_bytes(),
@@ -1753,7 +2071,7 @@ Notes
             &write_params.path,
             &policy,
             write_params.create,
-            write_params.overwrite,
+            true, // allow overwrite; mode decides final content
         ) {
             Ok(writer) => writer,
             Err(FsError::PathNotAllowed { path }) => {
@@ -1861,19 +2179,74 @@ Notes
                 );
             }
         };
-        // Write data atomically
-        match writer.write_atomic(&data) {
-            Ok((bytes_written, hash)) => {
+        // Build final content based on mode
+        let existed_before = std::fs::metadata(&write_params.path).is_ok();
+        let existing = std::fs::read(&write_params.path).unwrap_or_else(|_| Vec::new());
+        let mode = write_params
+            .mode
+            .as_deref()
+            .map(|s| s.to_ascii_lowercase())
+            .unwrap_or_else(|| "overwrite".to_string());
+        let final_bytes = match mode.as_str() {
+            "overwrite" => data.clone(),
+            "append" => {
+                let mut v = existing.clone();
+                v.extend_from_slice(&data);
+                v
+            }
+            "insert" => {
+                let off = write_params.offset.unwrap_or(existing.len() as u64) as usize;
+                let mut v = Vec::with_capacity(existing.len() + data.len());
+                let split = std::cmp::min(off, existing.len());
+                v.extend_from_slice(&existing[..split]);
+                v.extend_from_slice(&data);
+                v.extend_from_slice(&existing[split..]);
+                v
+            }
+            "patch" => {
+                // Not implemented: return error
+                let msg = "patch mode not supported".to_string();
+                self.auditor.log_error(
+                    ctx,
+                    &msg,
+                    Some(ErrorDetails {
+                        path: Some(write_params.path.clone()),
+                        ..Default::default()
+                    }),
+                );
+                return create_error_response(
+                    id.clone(),
+                    McpErrorCode::InvalidArgs,
+                    Some(msg),
+                    Some(self.build_error_data(
+                        "fs.write",
+                        &id,
+                        "unsupportedMode",
+                        serde_json::json!({"mode": mode}),
+                    )),
+                );
+            }
+            _ => data.clone(),
+        };
+
+        // Write data atomically regardless of requested atomic flag for safety
+        match writer.write_atomic(&final_bytes) {
+            Ok((bytes_written, _hash)) => {
+                let file_size = std::fs::metadata(&write_params.path)
+                    .map(|m| m.len())
+                    .unwrap_or(bytes_written);
+                let created = !existed_before;
                 let result = FsWriteResult {
                     bytes_written,
-                    sha256: hash.clone(),
+                    file_size,
+                    created,
                 };
                 self.auditor.log_success(
                     ctx,
                     SuccessDetails {
                         path: Some(write_params.path.clone()),
                         bytes: Some(bytes_written),
-                        content_hash: Some(hash),
+                        content_hash: None,
                         ..Default::default()
                     },
                 );
@@ -2204,9 +2577,13 @@ mod tests {
         std::fs::write(temp_file.path(), "test content").unwrap();
         let params = FsReadParams {
             path: temp_file.path().to_string_lossy().to_string(),
-            offset: 0,
-            length: 1000,
             encoding: "utf8".to_string(),
+            offset: Some(0),
+            length: Some(1000),
+            line_offset: None,
+            line_count: None,
+            mode: None,
+            include_stats: None,
         };
         let audit_ctx = AuditContext::new(
             "test".to_string(),
@@ -2229,9 +2606,13 @@ mod tests {
         // Try to read a file outside allowed roots
         let params = FsReadParams {
             path: "/forbidden/path".to_string(),
-            offset: 0,
-            length: 1000,
             encoding: "utf8".to_string(),
+            offset: Some(0),
+            length: Some(1000),
+            line_offset: None,
+            line_count: None,
+            mode: None,
+            include_stats: None,
         };
         let audit_ctx = AuditContext::new(
             "test".to_string(),
@@ -2259,8 +2640,10 @@ mod tests {
             path: test_file.to_string_lossy().to_string(),
             data: "test data".to_string(),
             encoding: "utf8".to_string(),
+            offset: None,
+            mode: Some("overwrite".to_string()),
             create: true,
-            overwrite: true,
+            atomic: true,
         };
         let audit_ctx = AuditContext::new(
             "test".to_string(),

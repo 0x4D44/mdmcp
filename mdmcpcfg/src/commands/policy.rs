@@ -56,16 +56,17 @@ pub async fn edit() -> Result<()> {
             .or_else(|_| which::which("Code.exe"))
         {
             println!(
-                "📝 Opening core and user policies in VS Code: {}, {}",
-                paths.core_policy_file.display(),
-                paths.policy_file.display()
+                "📝 Opening user and core policies in VS Code: {}, {}",
+                paths.policy_file.display(),
+                paths.core_policy_file.display()
             );
             // Use -n to open a new window, -w to wait for the window to be closed
             let status = std::process::Command::new(code_path)
                 .arg("-n")
                 .arg("-w")
-                .arg(&paths.core_policy_file)
+                // Open user policy first so it gains focus
                 .arg(&paths.policy_file)
+                .arg(&paths.core_policy_file)
                 .status()
                 .context("Failed to launch VS Code")?;
             if !status.success() {

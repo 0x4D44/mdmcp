@@ -222,19 +222,49 @@ pub async fn update(channel: String, rollback: bool, force: bool) -> Result<()> 
     let choice = prompt_source_choice(github.is_some(), local_info.is_some())?;
     match choice {
         Some('G') => {
-            if !prompt_named_confirmation("Proceed with GitHub update? [Y/n]: ")? {
+            let mut restart_claude = false;
+            let mut claude_path: Option<String> = None;
+            if is_claude_running() {
+                claude_path = find_claude_path();
+                if !prompt_named_confirmation(
+                    "Update will stop and restart Claude Desktop - is that OK? [Y/n]: ",
+                )? {
+                    println!("✖ Update cancelled.");
+                    return Ok(());
+                }
+                if let Err(e) = stop_claude_desktop() {
+                    println!("⚠️  Failed to stop Claude Desktop: {}", e);
+                } else {
+                    restart_claude = true;
+                }
+            } else if !prompt_named_confirmation("Proceed with GitHub update? [Y/n]: ")? {
                 println!("✖ Update cancelled.");
                 return Ok(());
             }
-            update_from_github(channel, &paths, force, true).await
+            update_from_github(channel, &paths, force, true, restart_claude, claude_path).await
         }
         Some('L') => {
-            if !prompt_named_confirmation("Proceed with Local update? [Y/n]: ")? {
+            let mut restart_claude = false;
+            let mut claude_path: Option<String> = None;
+            if is_claude_running() {
+                claude_path = find_claude_path();
+                if !prompt_named_confirmation(
+                    "Update will stop and restart Claude Desktop - is that OK? [Y/n]: ",
+                )? {
+                    println!("✖ Update cancelled.");
+                    return Ok(());
+                }
+                if let Err(e) = stop_claude_desktop() {
+                    println!("⚠️  Failed to stop Claude Desktop: {}", e);
+                } else {
+                    restart_claude = true;
+                }
+            } else if !prompt_named_confirmation("Proceed with Local update? [Y/n]: ")? {
                 println!("✖ Update cancelled.");
                 return Ok(());
             }
             let (bin, _) = local_info.expect("local info should exist");
-            update_from_local_binary(&paths, &bin, force, true).await
+            update_from_local_binary(&paths, &bin, force, true, restart_claude, claude_path).await
         }
         _ => {
             println!("✖ Update cancelled by user.");
@@ -250,6 +280,8 @@ async fn update_from_github(
     paths: &Paths,
     force: bool,
     preconfirmed: bool,
+    restart_claude_after: bool,
+    claude_path: Option<String>,
 ) -> Result<()> {
     // Fetch latest release
     let release = if channel == "stable" {
@@ -309,6 +341,13 @@ async fn update_from_github(
         println!("⚠️  Failed to refresh core policy: {}", e);
     }
 
+    // If requested, restart Claude Desktop before self-update to ensure it's back up
+    if restart_claude_after {
+        if let Err(e) = start_claude_desktop(claude_path.as_deref()) {
+            println!("⚠️  Failed to restart Claude Desktop: {}", e);
+        }
+    }
+
     // Attempt self-update of mdmcpcfg
     if let Err(e) = download_and_self_update_mdmcpcfg(&release).await {
         println!("⚠️  mdmcpcfg self-update skipped: {}", e);
@@ -326,6 +365,8 @@ async fn update_from_local_binary(
     source_binary: &Path,
     force: bool,
     preconfirmed: bool,
+    restart_claude_after: bool,
+    claude_path: Option<String>,
 ) -> Result<()> {
     println!("📂 Updating from local binary: {}", source_binary.display());
 
@@ -410,6 +451,13 @@ async fn update_from_local_binary(
     // Refresh core policy defaults on update
     if let Err(e) = refresh_core_policy(paths) {
         println!("⚠️  Failed to refresh core policy: {}", e);
+    }
+
+    // If requested, restart Claude Desktop before self-update so it's back up promptly
+    if restart_claude_after {
+        if let Err(e) = start_claude_desktop(claude_path.as_deref()) {
+            println!("⚠️  Failed to restart Claude Desktop: {}", e);
+        }
     }
 
     // Try to self-update mdmcpcfg from the same directory as source_binary (if present)
@@ -774,6 +822,8 @@ async fn download_and_self_update_mdmcpcfg(release: &GitHubRelease) -> Result<()
         .arg("--new")
         .arg(new_cfg_path.to_string_lossy().to_string());
     let _ = cmd.spawn().context("Failed to spawn self-upgrade helper")?;
+    // Make sure console cursor is restored so prompt doesn't look hung
+    restore_console_cursor();
 
     println!("➡️  Relaunching mdmcpcfg via helper and exiting...");
     std::process::exit(0);
@@ -842,7 +892,179 @@ async fn try_self_update_from_local_tool(server_source_binary: &Path) -> Result<
         .arg(new_cfg_path.to_string_lossy().to_string());
     let _ = cmd.spawn().context("Failed to spawn self-upgrade helper")?;
     println!("➡️  Relaunching mdmcpcfg via helper and exiting...");
+    restore_console_cursor();
     std::process::exit(0);
+}
+
+/// Detect if Claude Desktop is currently running
+fn is_claude_running() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(out) = Command::new("tasklist").output() {
+            let s = String::from_utf8_lossy(&out.stdout).to_ascii_lowercase();
+            return s.contains("claude.exe");
+        }
+        false
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(status) = Command::new("pgrep").arg("-x").arg("Claude").status() {
+            return status.success();
+        }
+        false
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if let Ok(status) = Command::new("pgrep").arg("-f").arg("Claude").status() {
+            return status.success();
+        }
+        false
+    }
+}
+
+/// Attempt to stop Claude Desktop if running
+fn stop_claude_desktop() -> Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        let _ = Command::new("taskkill")
+            .args(["/IM", "Claude.exe", "/F", "/T"])
+            .status();
+        let _ = Command::new("taskkill")
+            .args(["/IM", "claude.exe", "/F", "/T"])
+            .status();
+        Ok(())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = Command::new("osascript")
+            .args(["-e", "tell application \"Claude\" to quit"])
+            .status();
+        Ok(())
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let _ = Command::new("pkill").arg("-f").arg("Claude").status();
+        Ok(())
+    }
+}
+
+/// Attempt to start Claude Desktop
+fn start_claude_desktop(_prev_path: Option<&str>) -> Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(path) = _prev_path {
+            let mut cmd = Command::new("cmd");
+            cmd.args(["/C", "start", "", path]);
+            let _ = cmd.spawn();
+            return Ok(());
+        }
+        if let Some(local) = dirs::data_local_dir() {
+            let candidate = local.join("Programs").join("Claude").join("Claude.exe");
+            if candidate.exists() {
+                let mut cmd = Command::new("cmd");
+                cmd.args(["/C", "start", "", &candidate.to_string_lossy()]);
+                let _ = cmd.spawn();
+                return Ok(());
+            }
+        }
+        let _ = Command::new("cmd")
+            .args(["/C", "start", "", "Claude.exe"])
+            .spawn();
+        return Ok(());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = Command::new("open").args(["-a", "Claude"]).status();
+        return Ok(());
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if Command::new("sh")
+            .arg("-lc")
+            .arg("command -v claude >/dev/null 2>&1 && nohup claude >/dev/null 2>&1 &")
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+        {
+            return Ok(());
+        }
+        Ok(())
+    }
+}
+
+/// Try to find the Claude Desktop executable path from the running process (Windows only)
+fn find_claude_path() -> Option<String> {
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(output) = Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                "(Get-Process -Name 'Claude' -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Path)"
+            ])
+            .output()
+        {
+            if output.status.success() {
+                let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if !s.is_empty() {
+                    return Some(s);
+                }
+            }
+        }
+        if let Ok(output) = Command::new("wmic")
+            .args([
+                "process",
+                "where",
+                "name='Claude.exe'",
+                "get",
+                "ExecutablePath",
+                "/value",
+            ])
+            .output()
+        {
+            if output.status.success() {
+                let s = String::from_utf8_lossy(&output.stdout);
+                for line in s.lines() {
+                    if let Some(rest) = line.strip_prefix("ExecutablePath=") {
+                        let path = rest.trim();
+                        if !path.is_empty() {
+                            return Some(path.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        None
+    }
+}
+
+/// Ensure the console cursor is visible and write a newline before exiting
+fn restore_console_cursor() {
+    #[cfg(target_os = "windows")]
+    unsafe {
+        use windows_sys::Win32::System::Console::{
+            GetConsoleMode, GetStdHandle, SetConsoleCursorInfo, SetConsoleMode,
+            CONSOLE_CURSOR_INFO, ENABLE_VIRTUAL_TERMINAL_PROCESSING, STD_OUTPUT_HANDLE,
+        };
+        let h_out = GetStdHandle(STD_OUTPUT_HANDLE);
+        if h_out != std::ptr::null_mut() {
+            let mut mode: u32 = 0;
+            let _ = GetConsoleMode(h_out, &mut mode as *mut u32);
+            let _ = SetConsoleMode(h_out, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+            let info = CONSOLE_CURSOR_INFO {
+                dwSize: 25,
+                bVisible: 1,
+            };
+            let _ = SetConsoleCursorInfo(h_out, &info as *const CONSOLE_CURSOR_INFO);
+        }
+    }
+    use std::io::Write as _;
+    let _ = std::io::stdout().write_all(b"\x1B[?25h\r\n");
+    let _ = std::io::stdout().flush();
 }
 
 /// Set executable permissions on Unix systems
@@ -1255,16 +1477,10 @@ fn create_default_policy_content() -> Result<String> {
         ArgsPolicy, CommandRule, CwdPolicy, LimitsConfig, LoggingConfig, Policy, WriteRule,
     };
     let home_dir = dirs::home_dir().context("Failed to get home directory")?;
-    let home_path = home_dir.to_string_lossy().replace('\\', "/");
     let workspace_path = home_dir
         .join("mdmcp-workspace")
         .to_string_lossy()
         .replace('\\', "/");
-    let users_path = if cfg!(target_os = "windows") {
-        "C:/Users"
-    } else {
-        "/tmp"
-    };
 
     let mut commands: Vec<CommandRule> = Vec::new();
 
@@ -1310,6 +1526,34 @@ fn create_default_policy_content() -> Result<String> {
             platform: vec!["linux".into(), "macos".into()],
             allow_any_args: true,
         });
+        // Common Unix text/file tools (only on Unix)
+        for (id, path) in [
+            ("head", "/usr/bin/head"),
+            ("tail", "/usr/bin/tail"),
+            ("grep", "/usr/bin/grep"),
+            ("wc", "/usr/bin/wc"),
+            ("sed", "/usr/bin/sed"),
+            ("diff", "/usr/bin/diff"),
+            ("patch", "/usr/bin/patch"),
+        ] {
+            commands.push(CommandRule {
+                id: id.into(),
+                exec: path.into(),
+                description: None,
+                env_static: std::collections::HashMap::new(),
+                args: ArgsPolicy {
+                    allow: vec![],
+                    fixed: vec![],
+                    patterns: vec![],
+                },
+                cwd_policy: CwdPolicy::WithinRoot,
+                env_allowlist: vec![],
+                timeout_ms: 20_000,
+                max_output_bytes: 4_000_000,
+                platform: vec!["linux".into(), "macos".into()],
+                allow_any_args: true,
+            });
+        }
     }
 
     // Windows builtins via cmd
@@ -1447,10 +1691,12 @@ fn create_default_policy_content() -> Result<String> {
         ));
     }
 
+    // Build core policy
     let policy = Policy {
         version: 1,
         deny_network_fs: true,
-        allowed_roots: vec![home_path, users_path.into()],
+        // For safety, do not include default allowed roots in core policy
+        allowed_roots: vec![],
         write_rules: vec![WriteRule {
             path: workspace_path,
             recursive: true,
@@ -1461,7 +1707,13 @@ fn create_default_policy_content() -> Result<String> {
         logging: LoggingConfig::default(),
         limits: LimitsConfig::default(),
     };
-    Ok(serde_yaml::to_string(&policy)?)
+    let body = serde_yaml::to_string(&policy)?;
+    // Prepend header comment
+    let header = "# MDMCP core policy (policy.core.yaml)\n#\n# This file contains vendor defaults installed by mdmcpcfg.\n# It WILL be overwritten on upgrade, and is set read-only to avoid accidental edits.\n#\n# To customize behavior, edit the user policy file instead: policy.user.yaml.\n# The user policy is merged over this core file and NEVER changed by upgrades.\n#\n";
+    let mut out = String::new();
+    out.push_str(header);
+    out.push_str(&body);
+    Ok(out)
 }
 
 /// Overwrite the core policy file with current defaults, preserving read-only flag.
@@ -1495,7 +1747,12 @@ fn create_minimal_user_policy_content() -> Result<String> {
         logging: LoggingConfig::default(),
         limits: LimitsConfig::default(),
     };
-    Ok(serde_yaml::to_string(&policy)?)
+    let body = serde_yaml::to_string(&policy)?;
+    let header = "# MDMCP user policy (policy.user.yaml)\n#\n# This file contains your local overrides and configuration.\n# mdmcpcfg install/upgrade NEVER changes this file.\n#\n# Tips:\n# - Add your allowed_roots and write_rules here.\n# - Add or adjust commands you want exposed to the MCP server.\n# - Keep deny_network_fs consistent with your security posture.\n#\n";
+    let mut out = String::new();
+    out.push_str(header);
+    out.push_str(&body);
+    Ok(out)
 }
 
 /// Set or clear read-only attribute on a file cross-platform
