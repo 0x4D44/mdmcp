@@ -1,6 +1,6 @@
 version: 1
 deny_network_fs: false
 allowed_roots:
-  - C:\Users\MartinDavidson\AppData\Local\Temp\.tmpYWJr5q
+  - C:\Users\MartinDavidson\AppData\Local\Temp\.tmpLmMkEH
 write_rules: []
 commands: []
