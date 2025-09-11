@@ -19,11 +19,17 @@ fn make_policy_yaml(root: &str, log_path: &str) -> String {
     }
 }
 
-fn yaml_escape(p: &str) -> String { format!("\"{}\"", p.replace('\\', "/")) }
+fn yaml_escape(p: &str) -> String {
+    format!("\"{}\"", p.replace('\\', "/"))
+}
 #[cfg(target_os = "windows")]
-fn win_to_yaml_path(p: &str) -> String { p.replace('\\', "/") }
+fn win_to_yaml_path(p: &str) -> String {
+    p.replace('\\', "/")
+}
 #[cfg(not(target_os = "windows"))]
-fn win_to_yaml_path(p: &str) -> String { p.to_string() }
+fn win_to_yaml_path(p: &str) -> String {
+    p.to_string()
+}
 
 fn send_line(stdin: &mut impl Write, json: &str) {
     writeln!(stdin, "{}", json).expect("write json line");
@@ -37,7 +43,11 @@ fn e2e_file_tools_read_and_policy_deny() {
     let root = temp.path().to_string_lossy().to_string();
     let policy_path = temp.path().join("policy.yaml");
     let log_path = temp.path().join("audit.log");
-    std::fs::write(&policy_path, make_policy_yaml(&root, &log_path.to_string_lossy())).expect("write policy");
+    std::fs::write(
+        &policy_path,
+        make_policy_yaml(&root, &log_path.to_string_lossy()),
+    )
+    .expect("write policy");
     println!("E2E audit log file: {}", log_path.display());
 
     // Create a test file inside allowed root
@@ -62,7 +72,11 @@ fn e2e_file_tools_read_and_policy_deny() {
     std::thread::spawn(move || {
         let reader = BufReader::new(stdout);
         for line in reader.lines() {
-            if let Ok(l) = line { let _ = tx.send(l); } else { break; }
+            if let Ok(l) = line {
+                let _ = tx.send(l);
+            } else {
+                break;
+            }
         }
     });
 
@@ -92,7 +106,11 @@ fn e2e_file_tools_read_and_policy_deny() {
     send_line(&mut stdin, &call.to_string());
 
     // fs.read on forbidden path
-    let forbidden_path = if cfg!(target_os = "windows") { "C:/" } else { "/" };
+    let forbidden_path = if cfg!(target_os = "windows") {
+        "C:/"
+    } else {
+        "/"
+    };
     let fs_read = serde_json::json!({
         "jsonrpc": "2.0",
         "id": 3,
@@ -112,13 +130,20 @@ fn e2e_file_tools_read_and_policy_deny() {
                 match v.get("id") {
                     Some(id) if *id == serde_json::json!(2) => {
                         assert!(v.get("error").is_none(), "read_bytes error: {}", line);
-                        let blocks = v["result"]["content"].as_array().cloned().unwrap_or_default();
+                        let blocks = v["result"]["content"]
+                            .as_array()
+                            .cloned()
+                            .unwrap_or_default();
                         let text = blocks
                             .iter()
                             .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
                             .collect::<Vec<_>>()
                             .join("\n");
-                        assert!(text.contains("Hello E2E File Tools"), "unexpected content: {}", text);
+                        assert!(
+                            text.contains("Hello E2E File Tools"),
+                            "unexpected content: {}",
+                            text
+                        );
                         saw_file_ok = true;
                     }
                     Some(id) if *id == serde_json::json!(3) => {
@@ -135,12 +160,20 @@ fn e2e_file_tools_read_and_policy_deny() {
         }
     }
 
-    assert!(saw_file_ok && saw_policy_deny, "did not receive expected responses");
-    assert!(std::fs::metadata(&log_path).is_ok(), "audit log not created at {}", log_path.display());
+    assert!(
+        saw_file_ok && saw_policy_deny,
+        "did not receive expected responses"
+    );
+    assert!(
+        std::fs::metadata(&log_path).is_ok(),
+        "audit log not created at {}",
+        log_path.display()
+    );
 
     let _ = child.kill();
+    let _ = child.wait();
     if std::env::var("MDMCP_E2E_KEEP_TMP").is_ok() {
-        let kept = temp.into_path();
+        let kept = temp.keep();
         println!("E2E temp dir kept: {}", kept.display());
     }
 }

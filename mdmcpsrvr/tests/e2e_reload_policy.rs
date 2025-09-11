@@ -4,16 +4,15 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::Duration;
 
 fn policy_yaml_with_command(root: &str, log_path: &str, with_echo: bool) -> String {
-    let (exec, fixed) = if cfg!(target_os = "windows") {
-        ("C:/Windows/System32/cmd.exe", "fixed: ['-invalid-','-invalid-']") // unused placeholder when no echo
+    let fixed = if cfg!(target_os = "windows") {
+        "fixed: ['-invalid-','-invalid-']" // unused placeholder when no echo
     } else {
-        ("/bin/echo", "fixed: []")
+        "fixed: []"
     };
     let logging = format!("logging:\n  file: \"{}\"\n", log_path.replace('\\', "/"));
     let base = format!(
         "version: 1\nallowed_roots:\n  - {}\nwrite_rules: []\n{}commands:\n",
-        root,
-        logging
+        root, logging
     );
     if with_echo {
         if cfg!(target_os = "windows") {
@@ -45,7 +44,11 @@ fn e2e_reload_policy_adds_command() {
     let policy_path = temp.path().join("policy.yaml");
     let log_path = temp.path().join("audit.log");
     // Start with no commands
-    std::fs::write(&policy_path, policy_yaml_with_command(&root, &log_path.to_string_lossy(), false)).unwrap();
+    std::fs::write(
+        &policy_path,
+        policy_yaml_with_command(&root, &log_path.to_string_lossy(), false),
+    )
+    .unwrap();
     println!("E2E audit log file: {}", log_path.display());
 
     let mut child = Command::new(server_bin)
@@ -66,7 +69,11 @@ fn e2e_reload_policy_adds_command() {
     std::thread::spawn(move || {
         let reader = BufReader::new(stdout);
         for line in reader.lines() {
-            if let Ok(l) = line { let _ = tx.send(l); } else { break; }
+            if let Ok(l) = line {
+                let _ = tx.send(l);
+            } else {
+                break;
+            }
         }
     });
 
@@ -93,7 +100,11 @@ fn e2e_reload_policy_adds_command() {
     send_line(&mut stdin, &list1.to_string());
 
     // Update policy to add echo command
-    std::fs::write(&policy_path, policy_yaml_with_command(&root, &log_path.to_string_lossy(), true)).unwrap();
+    std::fs::write(
+        &policy_path,
+        policy_yaml_with_command(&root, &log_path.to_string_lossy(), true),
+    )
+    .unwrap();
 
     // tools/call reload_policy
     let reload = serde_json::json!({
@@ -130,10 +141,19 @@ fn e2e_reload_policy_adds_command() {
                     let run_tool = tools.iter().find(|t| t["name"] == "run_command");
                     if let Some(rt) = run_tool {
                         // Look inside oneOf/enum string set
-                        let oneof = rt["inputSchema"]["properties"]["command_id"]["oneOf"].as_array().cloned().unwrap_or_default();
-                        let enum_ids = rt["inputSchema"]["properties"]["command_id"]["enum"].as_array().cloned().unwrap_or_default();
-                        let oneof_has_echo = oneof.iter().any(|e| e.get("const") == Some(&serde_json::json!("echo")));
-                        let enum_has_echo = enum_ids.iter().any(|e| *e == serde_json::json!("echo"));
+                        let oneof = rt["inputSchema"]["properties"]["command_id"]["oneOf"]
+                            .as_array()
+                            .cloned()
+                            .unwrap_or_default();
+                        let enum_ids = rt["inputSchema"]["properties"]["command_id"]["enum"]
+                            .as_array()
+                            .cloned()
+                            .unwrap_or_default();
+                        let oneof_has_echo = oneof
+                            .iter()
+                            .any(|e| e.get("const") == Some(&serde_json::json!("echo")));
+                        let enum_has_echo =
+                            enum_ids.iter().any(|e| *e == serde_json::json!("echo"));
                         has_echo_after = oneof_has_echo || enum_has_echo;
                     }
                 }
@@ -143,12 +163,20 @@ fn e2e_reload_policy_adds_command() {
         }
     }
 
-    assert!(saw_reload_ok && has_echo_after, "reload and echo not verified");
-    assert!(std::fs::metadata(&log_path).is_ok(), "audit log not created at {}", log_path.display());
+    assert!(
+        saw_reload_ok && has_echo_after,
+        "reload and echo not verified"
+    );
+    assert!(
+        std::fs::metadata(&log_path).is_ok(),
+        "audit log not created at {}",
+        log_path.display()
+    );
 
     let _ = child.kill();
+    let _ = child.wait();
     if std::env::var("MDMCP_E2E_KEEP_TMP").is_ok() {
-        let kept = temp.into_path();
+        let kept = temp.keep();
         println!("E2E temp dir kept: {}", kept.display());
     }
 }

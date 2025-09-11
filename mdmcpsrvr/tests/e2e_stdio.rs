@@ -21,12 +21,18 @@ fn make_policy_yaml(root: &str, log_path: &str) -> String {
     }
 }
 
-fn yaml_escape(p: &str) -> String { format!("\"{}\"", p.replace('\\', "/")) }
+fn yaml_escape(p: &str) -> String {
+    format!("\"{}\"", p.replace('\\', "/"))
+}
 
 #[cfg(target_os = "windows")]
-fn win_to_yaml_path(p: &str) -> String { p.replace('\\', "/") }
+fn win_to_yaml_path(p: &str) -> String {
+    p.replace('\\', "/")
+}
 #[cfg(not(target_os = "windows"))]
-fn win_to_yaml_path(p: &str) -> String { p.to_string() }
+fn win_to_yaml_path(p: &str) -> String {
+    p.to_string()
+}
 
 fn send_line(stdin: &mut impl Write, json: &str) {
     writeln!(stdin, "{}", json).expect("write json line");
@@ -43,7 +49,11 @@ fn e2e_stdio_initialize_tools_and_run_command() {
     let root = temp.path().to_string_lossy().to_string();
     let policy_path = temp.path().join("policy.yaml");
     let log_path = temp.path().join("audit.log");
-    std::fs::write(&policy_path, make_policy_yaml(&root, &log_path.to_string_lossy())).expect("write policy");
+    std::fs::write(
+        &policy_path,
+        make_policy_yaml(&root, &log_path.to_string_lossy()),
+    )
+    .expect("write policy");
 
     // Print audit log location; visible with: cargo test -p mdmcpsrvr --test e2e_stdio -- --nocapture
     println!("E2E audit log file: {}", log_path.display());
@@ -69,7 +79,11 @@ fn e2e_stdio_initialize_tools_and_run_command() {
     std::thread::spawn(move || {
         let reader = BufReader::new(stdout);
         for line in reader.lines() {
-            if let Ok(l) = line { let _ = tx.send(l); } else { break; }
+            if let Ok(l) = line {
+                let _ = tx.send(l);
+            } else {
+                break;
+            }
         }
     });
 
@@ -130,7 +144,10 @@ fn e2e_stdio_initialize_tools_and_run_command() {
                 } else if id == serde_json::json!(3) {
                     assert!(v.get("error").is_none(), "tools/call error: {}", line);
                     // Check the content contains the echo text
-                    let content = v["result"]["content"].as_array().cloned().unwrap_or_default();
+                    let content = v["result"]["content"]
+                        .as_array()
+                        .cloned()
+                        .unwrap_or_default();
                     let text = content
                         .iter()
                         .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
@@ -145,16 +162,24 @@ fn e2e_stdio_initialize_tools_and_run_command() {
         }
     }
 
-    assert!(saw_init && saw_list && saw_run, "did not receive all responses");
+    assert!(
+        saw_init && saw_list && saw_run,
+        "did not receive all responses"
+    );
     // Ensure audit log file was created
-    assert!(std::fs::metadata(&log_path).is_ok(), "audit log not created at {}", log_path.display());
+    assert!(
+        std::fs::metadata(&log_path).is_ok(),
+        "audit log not created at {}",
+        log_path.display()
+    );
 
     // Cleanup
     let _ = child.kill();
+    let _ = child.wait();
 
     // Optionally persist temp dir for log inspection
     if std::env::var("MDMCP_E2E_KEEP_TMP").is_ok() {
-        let kept = temp.into_path();
+        let kept = temp.keep();
         println!("E2E temp dir kept: {}", kept.display());
     }
 }

@@ -35,7 +35,12 @@ impl Paths {
                 candidate_user
             };
             let core_policy_file = config_dir.join("policy.core.yaml");
-            return Ok(Self { bin_dir, config_dir, policy_file, core_policy_file });
+            return Ok(Self {
+                bin_dir,
+                config_dir,
+                policy_file,
+                core_policy_file,
+            });
         }
         let (bin_dir, config_dir) = if cfg!(target_os = "windows") {
             let local_appdata =
@@ -141,7 +146,7 @@ fn windows_path_to_wsl_mount(p: &str) -> Option<PathBuf> {
         let rest_unescaped = rest.replace('\\', "/");
         let mut out = PathBuf::from(format!("/mnt/{}", drive));
         // If rest starts with a path separator, skip it
-        let rest_trimmed = rest_unescaped.trim_start_matches(|c| c == '/' || c == '\\');
+        let rest_trimmed = rest_unescaped.trim_start_matches(&['/', '\\'][..]);
         out.push(rest_trimmed);
         Some(out)
     } else {
