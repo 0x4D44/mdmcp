@@ -28,6 +28,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "chron
 base64 = "0.22"
 cfg-if = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
+iana-time-zone = "0.1"
 dirs = "5.0"
 cap-std = "3.0"
 dunce = "1.0"

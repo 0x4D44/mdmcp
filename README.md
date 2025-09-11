@@ -173,7 +173,7 @@ Restart Claude Desktop after installation.
 
 - Build: `cargo build --workspace`
 - Run server (stdio):
-  `cargo run -p mdmcpsrvr -- --config test_policy.yaml --stdio`
+  `cargo run -p mdmcpsrvr -- --config tests/test_policy.yaml --stdio`
 - Run CLI:
   `cargo run -p mdmcpcfg -- --help`
 - Tests: `cargo test --workspace --all-features`
@@ -202,8 +202,8 @@ Restart Claude Desktop after installation.
 
 For a deeper dive, see:
 - `examples/policy.example.yaml` — starter policy template
-- `INSTALLATION_AND_USAGE.md` — additional platform notes
-- `mcp-server-development-guide.md` — MCP implementation details
+- `docs/INSTALLATION_AND_USAGE.md` — additional platform notes
+- `docs/mcp-server-development-guide.md` — MCP implementation details
 
 
 ## Structured Error Responses

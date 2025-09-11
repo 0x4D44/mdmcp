@@ -36,6 +36,24 @@ struct DocCache {
 fn build_tool_docs() -> Vec<ToolDoc> {
     vec![
         ToolDoc {
+            name: "get_datetime".into(),
+            description: "Get current system date, time, and timezone (format: iso8601|unix|human)".into(),
+            args: vec!["format?".into()],
+            example: "tools/call get_datetime { format: 'iso8601' }".into(),
+        },
+        ToolDoc {
+            name: "get_working_directory".into(),
+            description: "Get current working directory".into(),
+            args: vec![],
+            example: "tools/call get_working_directory {}".into(),
+        },
+        ToolDoc {
+            name: "set_working_directory".into(),
+            description: "Change working directory for subsequent commands (scope: session|next_command)".into(),
+            args: vec!["path".into(), "scope?".into()],
+            example: "tools/call set_working_directory { path: '/path', scope: 'next_command' }".into(),
+        },
+        ToolDoc {
             name: "read_bytes".into(),
             description: "Read file by byte range (path, offset?, length?, encoding?)".into(),
             args: vec![

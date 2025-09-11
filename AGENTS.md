@@ -5,14 +5,14 @@
 - Server: `mdmcpsrvr/src` (binary `mdmcpsrvr`) implements the MCP server (`main.rs`, plus `server.rs`, `rpc.rs`, `policy.rs`, `fs_safety.rs`, `sandbox.rs`, `audit.rs`).
 - CLI: `mdmcpcfg/src` (binary `mdmcpcfg`) provides install/update/policy tooling with subcommands under `src/commands/`.
 - Shared crates: common types and policy compiler live in `crates/mdmcp_common` and `crates/mdmcp_policy`.
-- Examples & tests: `examples/policy.example.yaml`, `tests/` (for integration); ad‑hoc smoke test: `test_new_methods.py`.
+- Examples & tests: `examples/policy.example.yaml`, `tests/` (for integration); ad‑hoc smoke test: `tests/test_new_methods.py`.
 
 ## Build, Test, and Development Commands
 - Build all: `cargo build --workspace`
-- Run server (stdio): `cargo run -p mdmcpsrvr -- --config test_policy.yaml --stdio`
+- Run server (stdio): `cargo run -p mdmcpsrvr -- --config tests/test_policy.yaml --stdio`
 - Run config CLI: `cargo run -p mdmcpcfg -- --help`
 - Unit tests: `cargo test --workspace --all-features`
-- Smoke test (Windows): `python test_new_methods.py` (uses `test_policy.yaml`)
+- Smoke test (Windows): `python tests/test_new_methods.py` (uses `tests/test_policy.yaml`)
 - Lint/format: `cargo fmt --all` and `cargo clippy --all-targets --all-features -D warnings`
 
 ## Coding Style & Naming Conventions
@@ -24,7 +24,7 @@
 - Frameworks: Rust built‑in tests plus `tokio-test` where async is involved.
 - Place unit tests next to code (`mod tests`), and broader scenarios under `tests/`.
 - Name tests descriptively (e.g., `enforces_disallowed_root`, `parses_policy_regex`).
-- Run `cargo test --workspace`; for end‑to‑end requests, use `python test_new_methods.py`.
+- Run `cargo test --workspace`; for end‑to‑end requests, use `python tests/test_new_methods.py`.
 
 ## Commit & Pull Request Guidelines
 - Commits: imperative, concise subject; include rationale in body when needed (e.g., “server: enforce root canonicalization”).

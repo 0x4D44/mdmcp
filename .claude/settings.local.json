@@ -15,7 +15,9 @@
       "Bash(grep:*)",
       "Bash(done)",
       "Bash(cat:*)",
-      "Bash(awk:*)"
+      "Bash(awk:*)",
+      "Bash(mkdir:*)",
+      "Bash(mv:*)"
     ],
     "deny": [],
     "ask": []

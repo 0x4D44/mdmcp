@@ -15,6 +15,7 @@ use crate::rpc::{
 };
 use anyhow::{Context, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use chrono::{Datelike, Timelike};
 use mdmcp_common::{
     CmdRunParams, CmdRunResult, FsReadMetadata, FsReadParams, FsReadResult, FsWriteParams,
     FsWriteResult, InitializeParams, InitializeResult, McpErrorCode, PromptArgument, PromptContent,
@@ -95,6 +96,8 @@ pub struct Server {
     auditor: Auditor,
     command_catalog: RwLock<CommandCatalog>, // rebuilt on policy reload
     config_path: PathBuf,
+    default_cwd: RwLock<Option<PathBuf>>,
+    next_command_cwd: RwLock<Option<PathBuf>>,
 }
 impl Server {
     /// Build standardized error.data payload with common fields plus extras
@@ -149,6 +152,8 @@ impl Server {
             auditor,
             command_catalog: RwLock::new(command_catalog),
             config_path,
+            default_cwd: RwLock::new(None),
+            next_command_cwd: RwLock::new(None),
         })
     }
     /// Handle a JSON-RPC message line (request or notification)
@@ -356,6 +361,35 @@ impl Server {
         let tools = serde_json::json!({
             "tools": [
                 {
+                    "name": "get_datetime",
+                    "description": "Get current system date, time, and timezone",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "format": {"type": "string", "enum": ["iso8601", "unix", "human"], "default": "iso8601"}
+                        },
+                        "additionalProperties": false
+                    }
+                },
+                {
+                    "name": "get_working_directory",
+                    "description": "Get current working directory",
+                    "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false}
+                },
+                {
+                    "name": "set_working_directory",
+                    "description": "Change working directory for subsequent commands",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string"},
+                            "scope": {"type": "string", "enum": ["session", "next_command"], "default": "session"}
+                        },
+                        "required": ["path"],
+                        "additionalProperties": false
+                    }
+                },
+                {
                     "name": "platform_hints",
                     "description": format!("Running on {}. Note: Claude Desktop only has access to directories allowed by server policy. Use 'list_accessible_directories' to see them.", platform),
                     "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false}
@@ -510,6 +544,121 @@ impl Server {
         debug!("tools/call: tool={}, args={:?}", tool_name, tool_args);
         // Dispatch to the appropriate tool implementation
         match tool_name {
+            "get_datetime" => {
+                #[allow(clippy::unwrap_used)]
+                fn fmt_offset(secs: i32) -> String {
+                    let sign = if secs >= 0 { '+' } else { '-' };
+                    let abs = secs.abs();
+                    let h = abs / 3600;
+                    let m = (abs % 3600) / 60;
+                    format!("{}{:02}:{:02}", sign, h, m)
+                }
+
+                let now = chrono::Local::now();
+                let iso = now.to_rfc3339();
+                let unix = now.timestamp();
+                let offset = fmt_offset(now.offset().local_minus_utc());
+                let tz = iana_time_zone::get_timezone().unwrap_or_else(|_| "Local".to_string());
+                let weekday = now.format("%A").to_string();
+                let components = serde_json::json!({
+                    "year": now.year(),
+                    "month": now.month(),
+                    "day": now.day(),
+                    "hour": now.hour(),
+                    "minute": now.minute(),
+                    "second": now.second(),
+                    "weekday": weekday
+                });
+                let payload = serde_json::json!({
+                    "datetime": iso,
+                    "timezone": tz,
+                    "offset": offset,
+                    "unix": unix,
+                    "components": components
+                });
+                let result = serde_json::json!({
+                    "content": [{"type": "text", "text": serde_json::to_string_pretty(&payload).unwrap_or_else(|_| payload.to_string())}],
+                    "isError": false
+                });
+                self.auditor.log_success(ctx, SuccessDetails::default());
+                create_success_response(id, result)
+            }
+            "get_working_directory" => {
+                let cwd = std::env::current_dir()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| "".to_string());
+                let payload = serde_json::json!({"cwd": cwd});
+                let result = serde_json::json!({
+                    "content": [{"type": "text", "text": payload.to_string()}],
+                    "isError": false
+                });
+                self.auditor.log_success(ctx, SuccessDetails::default());
+                create_success_response(id, result)
+            }
+            "set_working_directory" => {
+                let path = tool_args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+                if let Err(mut msg) = validate_file_path(path) {
+                    if let Some(s) = get_resource_suggestion(path) {
+                        msg.push_str(&format!("\n{}", s));
+                    }
+                    return create_error_response(id, McpErrorCode::InvalidArgs, Some(msg), None);
+                }
+                let candidate = match dunce::canonicalize(path) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        return create_error_response(
+                            id,
+                            McpErrorCode::InvalidArgs,
+                            Some(format!("Invalid path: {}", e)),
+                            None,
+                        )
+                    }
+                };
+                if !candidate.is_dir() {
+                    return create_error_response(
+                        id,
+                        McpErrorCode::InvalidArgs,
+                        Some("Path is not a directory".to_string()),
+                        None,
+                    );
+                }
+                let allowed = {
+                    let pol = self.policy.read().unwrap();
+                    pol.is_path_allowed(&candidate).unwrap_or(false)
+                };
+                if !allowed {
+                    return create_error_response(
+                        id,
+                        McpErrorCode::PolicyDeny,
+                        Some("Working directory not within allowed roots".to_string()),
+                        None,
+                    );
+                }
+                let scope = tool_args
+                    .get("scope")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("session");
+                match scope {
+                    "next_command" => {
+                        let mut lock = self.next_command_cwd.write().unwrap();
+                        *lock = Some(candidate.clone());
+                    }
+                    _ => {
+                        let mut lock = self.default_cwd.write().unwrap();
+                        *lock = Some(candidate.clone());
+                    }
+                }
+                let payload = serde_json::json!({
+                    "cwd": candidate.to_string_lossy(),
+                    "scope": scope
+                });
+                let result = serde_json::json!({
+                    "content": [{"type": "text", "text": payload.to_string()}],
+                    "isError": false
+                });
+                self.auditor.log_success(ctx, SuccessDetails::default());
+                create_success_response(id, result)
+            }
             "read_bytes" => {
                 if let Some(p) = tool_args.get("path").and_then(|v| v.as_str()) {
                     if let Err(mut msg) = validate_file_path(p) {
@@ -915,7 +1064,18 @@ impl Server {
 
             "run_command" => {
                 // Convert tool args to cmd.run format
-                let cmd_params = serde_json::json!({
+                // Choose working directory from next_command or session default if present
+                let chosen_cwd: Option<String> = {
+                    let mut next = self.next_command_cwd.write().unwrap();
+                    if let Some(p) = next.take() {
+                        Some(p.to_string_lossy().to_string())
+                    } else {
+                        drop(next);
+                        let sess = self.default_cwd.read().unwrap();
+                        sess.as_ref().map(|p| p.to_string_lossy().to_string())
+                    }
+                };
+                let mut cmd_params = serde_json::json!({
                     "commandId": tool_args.get("command_id"),
                     "args": tool_args.get("args").unwrap_or(&serde_json::json!([])),
                     "stdin": tool_args.get("stdin").unwrap_or(&serde_json::json!("")),
@@ -923,6 +1083,11 @@ impl Server {
                     "env": {},
                     "timeoutMs": null
                 });
+                if let Some(cwd_s) = chosen_cwd {
+                    if let Some(map) = cmd_params.as_object_mut() {
+                        map.insert("cwd".to_string(), serde_json::json!(cwd_s));
+                    }
+                }
                 // Execute via cmd.run handler, then adapt result to MCP tool content blocks
                 let cmd_response = self.handle_cmd_run(ctx, id.clone(), cmd_params).await;
                 if let Some(err) = &cmd_response.error {
@@ -2811,7 +2976,7 @@ mod tests {
         let compiled_policy = Arc::new(policy.compile().unwrap());
         Server::new(
             compiled_policy,
-            std::env::current_dir().unwrap().join("test_policy.yaml"),
+            std::env::current_dir().unwrap().join("tests/test_policy.yaml"),
         )
         .await
         .unwrap()
@@ -2934,6 +3099,87 @@ mod tests {
             .await;
         assert!(response.result.is_some());
         assert!(response.error.is_none());
+    }
+    #[tokio::test]
+    async fn test_tools_list_includes_get_datetime() {
+        let server = create_test_server().await;
+        let audit_ctx = AuditContext::new("test".into(), "tools/list".into(), "hash".into());
+        let resp = server
+            .handle_tools_list(&audit_ctx, RpcId::Number(1), serde_json::json!({}))
+            .await;
+        assert!(resp.error.is_none());
+        let result = resp.result.unwrap();
+        let tools = result.get("tools").and_then(|t| t.as_array()).unwrap();
+        let has = tools
+            .iter()
+            .any(|t| t.get("name").and_then(|n| n.as_str()) == Some("get_datetime"));
+        assert!(has);
+    }
+    #[tokio::test]
+    async fn test_get_datetime_tool_shape() {
+        let server = create_test_server().await;
+        let audit_ctx = AuditContext::new("test".into(), "tools/call".into(), "hash".into());
+        let params = serde_json::json!({
+            "name": "get_datetime",
+            "arguments": {"format": "iso8601"}
+        });
+        let resp = server
+            .handle_tools_call(&audit_ctx, RpcId::Number(1), params)
+            .await;
+        assert!(resp.error.is_none());
+        let binding = resp.result.unwrap();
+        let txt = binding["content"][0]["text"].as_str().unwrap();
+        let v: serde_json::Value = serde_json::from_str(txt).unwrap();
+        assert!(v.get("datetime").and_then(|x| x.as_str()).is_some());
+        assert!(v.get("offset").and_then(|x| x.as_str()).is_some());
+        assert!(v.get("unix").and_then(|x| x.as_i64()).is_some());
+        let comps = v.get("components").and_then(|c| c.as_object()).unwrap();
+        assert!(comps.get("year").unwrap().as_i64().unwrap() >= 1970);
+    }
+    #[tokio::test]
+    async fn test_working_directory_tools_and_next_command() {
+        let server = create_test_server().await;
+
+        // get_working_directory returns a JSON with cwd
+        let audit_ctx = AuditContext::new("test".into(), "tools/call".into(), "hash".into());
+        let resp = server
+            .handle_tools_call(
+                &audit_ctx,
+                RpcId::Number(1),
+                serde_json::json!({"name":"get_working_directory","arguments":{}}),
+            )
+            .await;
+        assert!(resp.error.is_none());
+
+        // Set next_command working directory to allowed root
+        let root0 = { server.policy.read().unwrap().allowed_roots_canonical[0].clone() };
+        let set_resp = server
+            .handle_tools_call(
+                &audit_ctx,
+                RpcId::Number(2),
+                serde_json::json!({
+                    "name":"set_working_directory",
+                    "arguments": {"path": root0.to_string_lossy(), "scope": "next_command"}
+                }),
+            )
+            .await;
+        assert!(set_resp.error.is_none());
+        {
+            let nc = server.next_command_cwd.read().unwrap();
+            assert!(nc.is_some());
+        }
+        // Run echo; this should consume next_command_cwd
+        let call = serde_json::json!({
+            "name": "run_command",
+            "arguments": {"command_id": "echo", "args": ["ok"]}
+        });
+        let _rr = server
+            .handle_tools_call(&audit_ctx, RpcId::Number(3), call)
+            .await;
+        {
+            let nc = server.next_command_cwd.read().unwrap();
+            assert!(nc.is_none());
+        }
     }
     #[test]
     fn test_generate_request_id() {
