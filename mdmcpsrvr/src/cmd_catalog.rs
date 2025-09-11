@@ -448,6 +448,7 @@ mod tests {
                     "macos".to_string(),
                 ],
                 allow_any_args: false,
+                help_capture: Default::default(),
             }],
             logging: LoggingConfig::default(),
             limits: LimitsConfig::default(),

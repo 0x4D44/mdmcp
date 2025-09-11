@@ -16,6 +16,7 @@ use clap::{Parser, Subcommand};
 mod commands;
 mod io;
 
+use commands::docs;
 use commands::{doctor, install, policy};
 
 #[derive(Parser)]
@@ -68,6 +69,12 @@ enum Commands {
         /// Force update even if versions match
         #[arg(long)]
         force: bool,
+    },
+    /// Build and cache documentation for tools and commands
+    Docs {
+        /// Build the documentation cache now
+        #[arg(long)]
+        build: bool,
     },
     /// Manage policy configuration
     #[command(subcommand)]
@@ -182,6 +189,7 @@ async fn main() -> Result<()> {
             PolicyCommands::ListEnv { id } => policy::list_env(id).await,
         },
         Commands::Doctor => doctor::run().await,
+        Commands::Docs { build: _ } => docs::build().await,
         Commands::Uninstall {
             remove_policy,
             remove_claude_config,

@@ -8,6 +8,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
 
+use crate::commands::docs;
 use crate::io::{is_executable, write_file, ClaudeDesktopConfig, Paths};
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -17,14 +18,14 @@ const GITHUB_RELEASES_LATEST: &str = "https://api.github.com/repos/0x4D44/mdmcp/
 const GITHUB_RELEASES: &str = "https://api.github.com/repos/0x4D44/mdmcp/releases";
 
 /// GitHub release information
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct GitHubRelease {
     tag_name: String,
     assets: Vec<GitHubAsset>,
     prerelease: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct GitHubAsset {
     name: String,
     browser_download_url: String,
@@ -173,21 +174,22 @@ pub async fn update(channel: String, rollback: bool, force: bool) -> Result<()> 
     );
 
     // Check current version
-    if let Some(current_info) = InstallationInfo::load(&paths)? {
-        println!("ℹ️ Current installed version: {}", current_info.version);
+    let current_info = if let Some(info) = InstallationInfo::load(&paths)? {
+        println!("ℹ️ Current installed version: {}", info.version);
 
         // Verify current binary integrity
-        let binary_path = Path::new(&current_info.binary_path);
+        let binary_path = Path::new(&info.binary_path);
         if binary_path.exists() {
             let current_hash = calculate_sha256(binary_path)?;
-            if current_hash != current_info.binary_sha256 {
+            if current_hash != info.binary_sha256 {
                 println!("⚠️  Binary hash mismatch - binary may have been modified");
             }
         }
+        Some(info)
     } else {
         println!("ℹ️  No existing installation found - performing fresh install");
         return run(None, true, false, None).await;
-    }
+    };
 
     // Probe available sources
     let github = if channel == "stable" {
@@ -222,10 +224,38 @@ pub async fn update(channel: String, rollback: bool, force: bool) -> Result<()> 
     let choice = prompt_source_choice(github.is_some(), local_info.is_some())?;
     match choice {
         Some('G') => {
-            let mut restart_claude = false;
-            let mut claude_path: Option<String> = None;
-            if is_claude_running() {
-                claude_path = find_claude_path();
+            let github_release = github.expect("GitHub release should exist");
+
+            // Check if update is needed BEFORE stopping Claude
+            if let Some(ref current) = current_info {
+                if current.version == github_release.tag_name && !force {
+                    println!(
+                        "✔ Already up to date with GitHub version {}!",
+                        github_release.tag_name
+                    );
+                    return Ok(());
+                }
+                println!("📦 Available GitHub version: {}", github_release.tag_name);
+            }
+
+            // Confirm update before stopping Claude
+            if !force
+                && !prompt_named_confirmation(&format!(
+                    "Update from {} to {}? [Y/n]: ",
+                    current_info
+                        .as_ref()
+                        .map(|i| i.version.as_str())
+                        .unwrap_or("unknown"),
+                    github_release.tag_name
+                ))?
+            {
+                println!("✖ Update cancelled.");
+                return Ok(());
+            }
+
+            // Now handle Claude Desktop stop/restart
+            let (restart_claude, claude_path) = if is_claude_running() {
+                let path = find_claude_path();
                 if !prompt_named_confirmation(
                     "Update will stop and restart Claude Desktop - is that OK? [Y/n]: ",
                 )? {
@@ -234,20 +264,68 @@ pub async fn update(channel: String, rollback: bool, force: bool) -> Result<()> 
                 }
                 if let Err(e) = stop_claude_desktop() {
                     println!("⚠️  Failed to stop Claude Desktop: {}", e);
+                    (false, None)
                 } else {
-                    restart_claude = true;
+                    (true, path)
                 }
-            } else if !prompt_named_confirmation("Proceed with GitHub update? [Y/n]: ")? {
-                println!("✖ Update cancelled.");
-                return Ok(());
-            }
+            } else {
+                (false, None)
+            };
+
             update_from_github(channel, &paths, force, true, restart_claude, claude_path).await
         }
         Some('L') => {
-            let mut restart_claude = false;
-            let mut claude_path: Option<String> = None;
-            if is_claude_running() {
-                claude_path = find_claude_path();
+            let (local_bin, local_version) = local_info.expect("local info should exist");
+
+            // Check if update is needed BEFORE stopping Claude
+            if let Some(ref current) = current_info {
+                let new_version_tag = format!("{} (local)", local_version);
+
+                // Try to get actual version of currently installed binary for better comparison
+                let current_binary = paths.server_binary();
+                if current_binary.exists() {
+                    if let Ok(actual_current_version) =
+                        test_local_binary_version(&current_binary).await
+                    {
+                        if actual_current_version == local_version
+                            && local_version != "local"
+                            && !force
+                        {
+                            println!(
+                                "✔ Already up to date - both binaries report same version {}!",
+                                local_version
+                            );
+                            return Ok(());
+                        }
+                    }
+                }
+
+                if current.version == new_version_tag && local_version != "local" && !force {
+                    println!("✔ Already up to date with local version {}!", local_version);
+                    return Ok(());
+                }
+
+                println!("📦 Available local version: {}", new_version_tag);
+            }
+
+            // Confirm update before stopping Claude
+            if !force
+                && !prompt_named_confirmation(&format!(
+                    "Update from {} to {} (local)? [Y/n]: ",
+                    current_info
+                        .as_ref()
+                        .map(|i| i.version.as_str())
+                        .unwrap_or("unknown"),
+                    local_version
+                ))?
+            {
+                println!("✖ Update cancelled.");
+                return Ok(());
+            }
+
+            // Now handle Claude Desktop stop/restart
+            let (restart_claude, claude_path) = if is_claude_running() {
+                let path = find_claude_path();
                 if !prompt_named_confirmation(
                     "Update will stop and restart Claude Desktop - is that OK? [Y/n]: ",
                 )? {
@@ -256,15 +334,16 @@ pub async fn update(channel: String, rollback: bool, force: bool) -> Result<()> 
                 }
                 if let Err(e) = stop_claude_desktop() {
                     println!("⚠️  Failed to stop Claude Desktop: {}", e);
+                    (false, None)
                 } else {
-                    restart_claude = true;
+                    (true, path)
                 }
-            } else if !prompt_named_confirmation("Proceed with Local update? [Y/n]: ")? {
-                println!("✖ Update cancelled.");
-                return Ok(());
-            }
-            let (bin, _) = local_info.expect("local info should exist");
-            update_from_local_binary(&paths, &bin, force, true, restart_claude, claude_path).await
+            } else {
+                (false, None)
+            };
+
+            update_from_local_binary(&paths, &local_bin, force, true, restart_claude, claude_path)
+                .await
         }
         _ => {
             println!("✖ Update cancelled by user.");
@@ -283,41 +362,62 @@ async fn update_from_github(
     restart_claude_after: bool,
     claude_path: Option<String>,
 ) -> Result<()> {
-    // Fetch latest release
-    let release = if channel == "stable" {
-        fetch_latest_release().await?
-    } else {
-        fetch_latest_prerelease().await?
+    // Delegate to hook-based implementation for testability
+    let fetch_release = || async {
+        if channel == "stable" {
+            fetch_latest_release().await
+        } else {
+            fetch_latest_prerelease().await
+        }
     };
+    let downloader = |rel: GitHubRelease, prefix: String, dest: PathBuf| async move {
+        download_binary(&rel, &prefix, &dest).await
+    };
+    update_from_github_with_hooks(
+        fetch_release,
+        downloader,
+        paths,
+        force,
+        preconfirmed,
+        restart_claude_after,
+        claude_path,
+    )
+    .await
+}
 
-    // Check current version and compare
-    if let Some(current_info) = InstallationInfo::load(paths)? {
-        if !preconfirmed {
-            println!("ℹ️ Current installed version: {}", current_info.version);
-            println!("📦 Available version: {}", release.tag_name);
-        }
+/// Hook-based variant for testing: callers inject release fetch + download functions
+async fn update_from_github_with_hooks<Fetch, FutF, Download, FutD>(
+    fetch_release: Fetch,
+    download: Download,
+    paths: &Paths,
+    force: bool,
+    preconfirmed: bool,
+    restart_claude_after: bool,
+    claude_path: Option<String>,
+) -> Result<()>
+where
+    Fetch: Fn() -> FutF,
+    FutF: std::future::Future<Output = Result<GitHubRelease>>,
+    Download: Fn(GitHubRelease, String, PathBuf) -> FutD,
+    FutD: std::future::Future<Output = Result<()>>,
+{
+    // Fetch latest release via injected hook
+    let release = fetch_release().await?;
 
-        if current_info.version == release.tag_name && !force {
-            println!("✔ Already up to date!");
-            return Ok(());
-        }
-
-        if force && !preconfirmed {
+    // Version checks and confirmations are now done in the main update() function
+    // This function only does the actual update work
+    if !preconfirmed {
+        if let Some(current_info) = InstallationInfo::load(paths)? {
             println!(
-                "⚠️  Force updating to version {} (reinstall)",
-                release.tag_name
+                "📦 Updating from {} to {}",
+                current_info.version, release.tag_name
             );
-        }
-        if !preconfirmed && !force {
-            // Ask for confirmation
-            println!("❓ Update to version {}?", release.tag_name);
-            if !prompt_user_confirmation()? {
-                println!("✖ Update cancelled");
-                return Ok(());
+            if force {
+                println!("⚠️  Force updating (reinstall)");
             }
+        } else {
+            println!("📦 Installing version: {}", release.tag_name);
         }
-    } else if !preconfirmed {
-        println!("📦 Installing version: {}", release.tag_name);
     }
 
     // Backup current server binary
@@ -328,9 +428,13 @@ async fn update_from_github(
         fs::copy(&binary_path, &backup_path).context("Failed to create backup")?;
     }
 
-    // Download new server binary
-    // Download the server binary specifically
-    download_binary(&release, "mdmcpsrvr", &binary_path).await?;
+    // Download new server binary via injected hook
+    download(
+        release.clone(),
+        "mdmcpsrvr".to_string(),
+        binary_path.clone(),
+    )
+    .await?;
 
     // Update installation info
     let install_info = InstallationInfo::new(release.tag_name.clone(), paths)?;
@@ -348,12 +452,21 @@ async fn update_from_github(
         }
     }
 
-    // Attempt self-update of mdmcpcfg
-    if let Err(e) = download_and_self_update_mdmcpcfg(&release).await {
-        println!("⚠️  mdmcpcfg self-update skipped: {}", e);
+    // Attempt self-update of mdmcpcfg (skippable in tests)
+    if std::env::var("MDMCP_SKIP_SELF_UPDATE").is_err() {
+        if let Err(e) = download_and_self_update_mdmcpcfg(&release).await {
+            println!("⚠️  mdmcpcfg self-update skipped: {}", e);
+        }
     }
 
     println!("✅ Server update completed. mdmcpcfg will relaunch if self-updated.");
+
+    // Auto-generate documentation cache (non-blocking semantics)
+    println!("   Building documentation cache...");
+    match docs::build().await {
+        Ok(()) => println!("   ✅ Documentation cache built"),
+        Err(e) => println!("   ⚠️  Failed to build documentation cache: {}", e),
+    }
 
     Ok(())
 }
@@ -386,46 +499,21 @@ async fn update_from_local_binary(
     let version = test_local_binary_version(source_binary).await?;
     println!("✅ Local binary validated - Version: {}", version);
 
-    // Check current version and compare
-    if let Some(current_info) = InstallationInfo::load(paths)? {
-        let current_version = &current_info.version;
-        let new_version_tag = format!("{} (local)", version);
-
-        if !preconfirmed {
-            println!("ℹ️ Current installed version: {}", current_version);
-            println!("📦 Available version: {}", new_version_tag);
-        }
-
-        // Try to get actual version of currently installed binary for better comparison
-        let current_binary = paths.server_binary();
-        if current_binary.exists() {
-            if let Ok(actual_current_version) = test_local_binary_version(&current_binary).await {
-                if !preconfirmed {
-                    println!(
-                        "🔎 Current binary reports version: {}",
-                        actual_current_version
-                    );
-                }
-
-                // Compare the actual running versions, not just the stored metadata
-                if actual_current_version == version && version != "local" && !force {
-                    println!("✔ Already up to date - both binaries report same version!");
-                    return Ok(());
-                }
+    // Version checks and confirmations are now done in the main update() function
+    // This function only does the actual update work
+    if !preconfirmed {
+        if let Some(current_info) = InstallationInfo::load(paths)? {
+            let new_version_tag = format!("{} (local)", version);
+            println!(
+                "📦 Updating from {} to {}",
+                current_info.version, new_version_tag
+            );
+            if force {
+                println!("⚠️  Force updating (reinstall)");
             }
+        } else {
+            println!("📦 New version: {} (local)", version);
         }
-
-        // Only skip if versions are identical AND the current installation is also local
-        if current_info.version == new_version_tag && version != "local" && !force {
-            println!("✔ Already up to date with local version!");
-            return Ok(());
-        }
-
-        if current_info.version == new_version_tag && version == "local" {
-            println!("⚠️  Both current and new versions are detected as 'local' - proceeding with update to ensure binary is current");
-        }
-    } else {
-        println!("📦 New version: {} (local)", version);
     }
 
     // Backup current binary
@@ -467,6 +555,13 @@ async fn update_from_local_binary(
 
     println!("✅ Local server update complete. mdmcpcfg will relaunch if self-updated.");
 
+    // Auto-generate documentation cache (non-blocking semantics)
+    println!("   Building documentation cache...");
+    match docs::build().await {
+        Ok(()) => println!("   ✅ Documentation cache built"),
+        Err(e) => println!("   ⚠️  Failed to build documentation cache: {}", e),
+    }
+
     Ok(())
 }
 
@@ -501,6 +596,13 @@ async fn install_from_github(dest_dir: Option<String>, configure_claude: bool) -
 
     if configure_claude {
         println!("   Claude Desktop configured - restart Claude to use the MCP server");
+    }
+
+    // Auto-generate documentation cache (non-blocking semantics)
+    println!("   Building documentation cache...");
+    match docs::build().await {
+        Ok(()) => println!("   ✅ Documentation cache built"),
+        Err(e) => println!("   ⚠️  Failed to build documentation cache: {}", e),
     }
 
     Ok(())
@@ -579,6 +681,13 @@ async fn install_from_local_binary(
 
     if configure_claude {
         println!("   Claude Desktop configured - restart Claude to use the MCP server");
+    }
+
+    // Auto-generate documentation cache (non-blocking semantics)
+    println!("   Building documentation cache...");
+    match docs::build().await {
+        Ok(()) => println!("   ✅ Documentation cache built"),
+        Err(e) => println!("   ⚠️  Failed to build documentation cache: {}", e),
     }
 
     Ok(())
@@ -703,7 +812,7 @@ pub fn run_self_upgrade_helper(pid: u32, orig: String, new: String) -> Result<()
 
         unsafe {
             let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-            if handle != std::ptr::null_mut() {
+            if !handle.is_null() {
                 loop {
                     let mut code: u32 = 0;
                     if GetExitCodeProcess(handle, &mut code as *mut u32) == 0 {
@@ -926,24 +1035,90 @@ fn is_claude_running() -> bool {
 fn stop_claude_desktop() -> Result<()> {
     #[cfg(target_os = "windows")]
     {
-        let _ = Command::new("taskkill")
+        // Try both Claude.exe and claude.exe (case variations)
+        let mut stopped = false;
+
+        // First attempt: Claude.exe
+        match Command::new("taskkill")
             .args(["/IM", "Claude.exe", "/F", "/T"])
-            .status();
-        let _ = Command::new("taskkill")
+            .output()
+        {
+            Ok(output) => {
+                if output.status.success() {
+                    stopped = true;
+                } else {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    // Only show error if it's not "process not found"
+                    if !stderr.to_lowercase().contains("not found") && !stderr.trim().is_empty() {
+                        println!("⚠️  taskkill Claude.exe: {}", stderr.trim());
+                    }
+                }
+            }
+            Err(e) => println!("⚠️  Failed to run taskkill: {}", e),
+        }
+
+        // Second attempt: claude.exe (lowercase)
+        match Command::new("taskkill")
             .args(["/IM", "claude.exe", "/F", "/T"])
-            .status();
+            .output()
+        {
+            Ok(output) => {
+                if output.status.success() {
+                    stopped = true;
+                } else {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    // Only show error if it's not "process not found"
+                    if !stderr.to_lowercase().contains("not found") && !stderr.trim().is_empty() {
+                        println!("⚠️  taskkill claude.exe: {}", stderr.trim());
+                    }
+                }
+            }
+            Err(e) => println!("⚠️  Failed to run taskkill: {}", e),
+        }
+
+        if stopped {
+            println!("✅ Claude Desktop stopped");
+        }
         Ok(())
     }
     #[cfg(target_os = "macos")]
     {
-        let _ = Command::new("osascript")
+        match Command::new("osascript")
             .args(["-e", "tell application \"Claude\" to quit"])
-            .status();
+            .output()
+        {
+            Ok(output) => {
+                if output.status.success() {
+                    println!("✅ Claude Desktop stopped");
+                } else {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    if !stderr.trim().is_empty() {
+                        println!(
+                            "⚠️  Failed to quit Claude via AppleScript: {}",
+                            stderr.trim()
+                        );
+                    }
+                }
+            }
+            Err(e) => println!("⚠️  Failed to run osascript: {}", e),
+        }
         Ok(())
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        let _ = Command::new("pkill").arg("-f").arg("Claude").status();
+        match Command::new("pkill").arg("-f").arg("Claude").output() {
+            Ok(output) => {
+                if output.status.success() {
+                    println!("✅ Claude Desktop stopped");
+                } else {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    if !stderr.trim().is_empty() {
+                        println!("⚠️  pkill failed: {}", stderr.trim());
+                    }
+                }
+            }
+            Err(e) => println!("⚠️  Failed to run pkill: {}", e),
+        }
         Ok(())
     }
 }
@@ -970,12 +1145,12 @@ fn start_claude_desktop(_prev_path: Option<&str>) -> Result<()> {
         let _ = Command::new("cmd")
             .args(["/C", "start", "", "Claude.exe"])
             .spawn();
-        return Ok(());
+        Ok(())
     }
     #[cfg(target_os = "macos")]
     {
         let _ = Command::new("open").args(["-a", "Claude"]).status();
-        return Ok(());
+        Ok(())
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
@@ -1051,7 +1226,7 @@ fn restore_console_cursor() {
             CONSOLE_CURSOR_INFO, ENABLE_VIRTUAL_TERMINAL_PROCESSING, STD_OUTPUT_HANDLE,
         };
         let h_out = GetStdHandle(STD_OUTPUT_HANDLE);
-        if h_out != std::ptr::null_mut() {
+        if !h_out.is_null() {
             let mut mode: u32 = 0;
             let _ = GetConsoleMode(h_out, &mut mode as *mut u32);
             let _ = SetConsoleMode(h_out, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
@@ -1078,20 +1253,6 @@ fn set_executable_permissions(path: &Path) -> Result<()> {
 }
 
 // (removed) log_github_failure no longer used after unified source prompt
-
-/// Prompt user for confirmation
-fn prompt_user_confirmation() -> Result<bool> {
-    use std::io::{self, Write};
-
-    print!("Proceed? [Y/n]: ");
-    io::stdout().flush()?;
-
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-
-    let response = input.trim().to_lowercase();
-    Ok(response.is_empty() || response.starts_with('y'))
-}
 
 /// Prompt with a custom message and yes/no response
 fn prompt_named_confirmation(prompt: &str) -> Result<bool> {
@@ -1484,31 +1645,8 @@ fn create_default_policy_content() -> Result<String> {
 
     let mut commands: Vec<CommandRule> = Vec::new();
 
-    // Cross-platform commands
+    // Cross-platform commands (Unix-like)
     if cfg!(any(target_os = "linux", target_os = "macos")) {
-        commands.push(CommandRule {
-            id: "ls".into(),
-            exec: "/bin/ls".into(),
-            description: None,
-            env_static: std::collections::HashMap::new(),
-            args: ArgsPolicy {
-                allow: vec![
-                    "-l".into(),
-                    "-la".into(),
-                    "-a".into(),
-                    "-h".into(),
-                    "--color=never".into(),
-                ],
-                fixed: vec![],
-                patterns: vec![],
-            },
-            cwd_policy: CwdPolicy::WithinRoot,
-            env_allowlist: vec![],
-            timeout_ms: 5000,
-            max_output_bytes: 1_000_000,
-            platform: vec!["linux".into(), "macos".into()],
-            allow_any_args: true,
-        });
         commands.push(CommandRule {
             id: "cat".into(),
             exec: "/bin/cat".into(),
@@ -1525,6 +1663,7 @@ fn create_default_policy_content() -> Result<String> {
             max_output_bytes: 2_000_000,
             platform: vec!["linux".into(), "macos".into()],
             allow_any_args: true,
+            help_capture: Default::default(),
         });
         // Common Unix text/file tools (only on Unix)
         for (id, path) in [
@@ -1552,6 +1691,7 @@ fn create_default_policy_content() -> Result<String> {
                 max_output_bytes: 4_000_000,
                 platform: vec!["linux".into(), "macos".into()],
                 allow_any_args: true,
+                help_capture: Default::default(),
             });
         }
     }
@@ -1574,9 +1714,9 @@ fn create_default_policy_content() -> Result<String> {
             max_output_bytes: 2_000_000,
             platform: vec!["windows".into()],
             allow_any_args: true,
+            help_capture: Default::default(),
         };
         for (id, sub) in [
-            ("dir", "dir"),
             ("type", "type"),
             ("copy", "copy"),
             ("move", "move"),
@@ -1603,6 +1743,7 @@ fn create_default_policy_content() -> Result<String> {
             max_output_bytes: max_bytes,
             platform: vec!["windows".into()],
             allow_any_args: true,
+            help_capture: Default::default(),
         };
         commands.push(win_exec(
             "findstr",
@@ -1761,4 +1902,188 @@ fn set_readonly(path: &Path, readonly: bool) -> Result<()> {
     perms.set_readonly(readonly);
     std::fs::set_permissions(path, perms)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn test_parse_version_various_patterns() {
+        let samples = [
+            ("mdmcpsrvr 1.2.3", Some("1.2.3")),
+            ("version v0.3.0 (build)", Some("0.3.0")),
+            ("v2.0.0 release", Some("2.0.0")),
+            ("no version here", None),
+        ];
+        for (s, exp) in samples {
+            assert_eq!(parse_version_from_output(s).as_deref(), exp);
+        }
+    }
+
+    #[test]
+    fn test_get_platform_string_shape() {
+        let s = get_platform_string();
+        let parts: Vec<&str> = s.split('-').collect();
+        assert_eq!(parts.len(), 2, "expected <arch>-<os>");
+        let arch_ok = matches!(parts[0], "x86_64" | "aarch64" | "unknown");
+        let os_ok = matches!(parts[1], "windows" | "linux" | "macos" | "unknown");
+        assert!(arch_ok && os_ok, "unexpected platform string: {}", s);
+    }
+
+    #[test]
+    fn test_calculate_sha256_tempfile() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), b"hello").unwrap();
+        let digest = calculate_sha256(tmp.path()).unwrap();
+        assert_eq!(
+            digest,
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+        );
+    }
+
+    #[test]
+    fn test_default_policy_content_parses_and_has_defaults() {
+        let yaml = create_default_policy_content().expect("default policy content");
+        let pol: mdmcp_policy::Policy = mdmcp_policy::Policy::from_yaml(&yaml).unwrap();
+        assert_eq!(pol.version, 1);
+        // Core policy must include at least one write rule
+        assert!(!pol.write_rules.is_empty());
+    }
+
+    #[test]
+    fn test_refresh_core_policy_preserves_readonly_flag() {
+        // Build fake Paths rooted in a temp dir
+        let tmp = tempfile::tempdir().unwrap();
+        let bin = tmp.path().join("bin");
+        let cfg = tmp.path().join("config");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(&cfg).unwrap();
+        let paths = crate::io::Paths {
+            bin_dir: bin,
+            config_dir: cfg.clone(),
+            policy_file: cfg.join("policy.user.yaml"),
+            core_policy_file: cfg.join("policy.core.yaml"),
+        };
+
+        // Create an initial core policy file and mark it read-only
+        std::fs::write(
+            &paths.core_policy_file,
+            b"version: 1\nallowed_roots: []\ncommands: []\n",
+        )
+        .unwrap();
+        set_readonly(&paths.core_policy_file, true).unwrap();
+        assert!(std::fs::metadata(&paths.core_policy_file)
+            .unwrap()
+            .permissions()
+            .readonly());
+
+        // Refresh — should overwrite content and end as read-only again
+        refresh_core_policy(&paths).unwrap();
+        let meta = std::fs::metadata(&paths.core_policy_file).unwrap();
+        assert!(meta.permissions().readonly());
+        // Content should be non-trivial (starts with comment header)
+        let body = std::fs::read_to_string(&paths.core_policy_file).unwrap();
+        assert!(body.contains("MDMCP core policy"));
+    }
+
+    #[tokio::test]
+    async fn test_install_github_success_mocked() {
+        // Arrange temp paths
+        let tmp = tempfile::tempdir().unwrap();
+        let bin = tmp.path().join("bin");
+        let cfg = tmp.path().join("config");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(&cfg).unwrap();
+        let paths = crate::io::Paths {
+            bin_dir: bin.clone(),
+            config_dir: cfg.clone(),
+            policy_file: cfg.join("policy.user.yaml"),
+            core_policy_file: cfg.join("policy.core.yaml"),
+        };
+
+        // Fake release & downloader hooks
+        let fetch = || async {
+            Ok(GitHubRelease {
+                tag_name: "v9.9.9".to_string(),
+                assets: vec![GitHubAsset {
+                    name: "mdmcpsrvr-linux-x86_64".to_string(),
+                    browser_download_url: "http://example.invalid/binary".to_string(),
+                }],
+                prerelease: false,
+            })
+        };
+        let downloader = |_: GitHubRelease, _: String, dest: PathBuf| async move {
+            // Write an executable stub to dest
+            if let Some(parent) = dest.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            let mut f = std::fs::File::create(&dest).unwrap();
+            #[cfg(unix)]
+            {
+                f.write_all(b"#!/bin/sh\nexit 0\n").unwrap();
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = std::fs::metadata(&dest).unwrap().permissions();
+                perms.set_mode(0o755);
+                std::fs::set_permissions(&dest, perms).unwrap();
+            }
+            #[cfg(windows)]
+            {
+                f.write_all(b"MZ\0\0stub").unwrap();
+            }
+            Ok(())
+        };
+
+        // Prevent exiting process during self-update attempt
+        std::env::set_var("MDMCP_SKIP_SELF_UPDATE", "1");
+
+        // Act
+        update_from_github_with_hooks(fetch, downloader, &paths, false, true, false, None)
+            .await
+            .expect("mocked update ok");
+
+        // Assert: binary exists and is executable; install info recorded
+        let server_bin = paths.server_binary();
+        assert!(server_bin.exists());
+        assert!(crate::io::is_executable(&server_bin));
+        let info_file = paths.config_dir.join("install_info.json");
+        assert!(info_file.exists());
+        let info_text = std::fs::read_to_string(info_file).unwrap();
+        assert!(info_text.contains("\"version\": \"v9.9.9\""));
+
+        std::env::remove_var("MDMCP_SKIP_SELF_UPDATE");
+    }
+
+    #[tokio::test]
+    async fn test_network_failure_scenarios() {
+        // Arrange
+        let tmp = tempfile::tempdir().unwrap();
+        let bin = tmp.path().join("bin");
+        let cfg = tmp.path().join("config");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(&cfg).unwrap();
+        let paths = crate::io::Paths {
+            bin_dir: bin,
+            config_dir: cfg.clone(),
+            policy_file: cfg.join("policy.user.yaml"),
+            core_policy_file: cfg.join("policy.core.yaml"),
+        };
+        let fetch = || async {
+            Ok(GitHubRelease {
+                tag_name: "v0.0.1".to_string(),
+                assets: vec![],
+                prerelease: false,
+            })
+        };
+        let downloader = |_: GitHubRelease, _: String, _: PathBuf| async move {
+            bail!("simulated network failure")
+        };
+        std::env::set_var("MDMCP_SKIP_SELF_UPDATE", "1");
+        let res =
+            update_from_github_with_hooks(fetch, downloader, &paths, false, true, false, None)
+                .await;
+        assert!(res.is_err());
+        std::env::remove_var("MDMCP_SKIP_SELF_UPDATE");
+    }
 }

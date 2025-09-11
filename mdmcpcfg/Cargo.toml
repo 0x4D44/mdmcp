@@ -21,7 +21,8 @@ tempfile = "3"
 dirs = "5"
 edit = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time"] }
+regex = "1.10"
 shellexpand = "3.1"
 which = "6.0"
 mdmcp_policy = { path = "../crates/mdmcp_policy" }

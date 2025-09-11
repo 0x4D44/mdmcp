@@ -29,6 +29,66 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use tracing::{debug, error, info};
+
+fn strip_ansi(input: &str) -> String {
+    let re = regex::Regex::new(r"\[[0-?]*[ -/]*[@-~]").unwrap();
+    re.replace_all(input, "").to_string()
+}
+
+#[cfg(target_os = "linux")]
+fn is_wsl_runtime() -> bool {
+    if std::env::var("WSL_INTEROP").is_ok() || std::env::var("WSL_DISTRO_NAME").is_ok() {
+        return true;
+    }
+    if let Ok(release) = std::fs::read_to_string("/proc/sys/kernel/osrelease") {
+        let l = release.to_ascii_lowercase();
+        return l.contains("microsoft") || l.contains("wsl");
+    }
+    false
+}
+
+#[cfg(not(target_os = "linux"))]
+fn is_wsl_runtime() -> bool {
+    false
+}
+
+fn platform_string() -> String {
+    if cfg!(target_os = "windows") {
+        "Windows".to_string()
+    } else if cfg!(target_os = "macos") {
+        "macOS".to_string()
+    } else if cfg!(target_os = "linux") {
+        if is_wsl_runtime() {
+            "Linux (WSL)".to_string()
+        } else {
+            "Linux".to_string()
+        }
+    } else {
+        "Unknown".to_string()
+    }
+}
+
+fn validate_file_path(path: &str) -> Result<(), String> {
+    if path.starts_with("mdmcp://") {
+        return Err(format!(
+            "'{}' is a resource URI, not a file path. Use resources/read instead",
+            path
+        ));
+    }
+    if path.starts_with("http://") || path.starts_with("https://") {
+        return Err("HTTP URLs are not valid file paths".to_string());
+    }
+    Ok(())
+}
+
+fn get_resource_suggestion(uri: &str) -> Option<String> {
+    if uri.starts_with("mdmcp://") {
+        Some(format!("Try: resources/read with uri: '{}'", uri))
+    } else {
+        None
+    }
+}
+
 /// Main MCP server instance
 pub struct Server {
     policy: RwLock<Arc<CompiledPolicy>>, // hot-swappable policy
@@ -242,11 +302,67 @@ impl Server {
         _params: Value,
     ) -> RpcResponse {
         debug!("tools/list request");
+        // Build dynamic, example-first description for run_command from policy
+        let run_cmd_desc: String = {
+            let policy = { self.policy.read().unwrap().clone() };
+            let mut cmds: Vec<_> = policy.commands_by_id.values().collect();
+            cmds.sort_by(|a, b| a.rule.id.cmp(&b.rule.id));
+            let mut parts: Vec<String> = Vec::new();
+            for c in cmds.iter().take(6) {
+                let id = &c.rule.id;
+                if let Some(desc) = &c.rule.description {
+                    let d = desc.trim();
+                    if !d.is_empty() {
+                        let short = if d.len() > 40 {
+                            format!("{}…", &d[..40])
+                        } else {
+                            d.to_string()
+                        };
+                        parts.push(format!("{}: {}", id, short));
+                        continue;
+                    }
+                }
+                parts.push(id.clone());
+            }
+            let listed = if parts.is_empty() {
+                "no configured commands".to_string()
+            } else {
+                parts.join(", ")
+            };
+            format!(
+                "Commands providing functions such as {}. Use run_command with 'commandId'. For full details, use resources/read on 'mdmcp://commands/catalog' (not file tools).",
+                listed
+            )
+        };
+        // Build dynamic command_id enum and oneOf entries (cap to 50 to keep payload small)
+        let (cmd_id_enum, cmd_id_oneof) = {
+            let policy = { self.policy.read().unwrap().clone() };
+            let mut cmds: Vec<_> = policy.commands_by_id.values().collect();
+            cmds.sort_by(|a, b| a.rule.id.cmp(&b.rule.id));
+            let mut ids = Vec::new();
+            let mut oneofs: Vec<serde_json::Value> = Vec::new();
+            for c in cmds.into_iter().take(50) {
+                ids.push(c.rule.id.clone());
+                let desc = c.rule.description.clone().unwrap_or_default();
+                oneofs.push(serde_json::json!({
+                    "const": c.rule.id,
+                    "description": if desc.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(desc) }
+                }));
+            }
+            (ids, oneofs)
+        };
+
+        let platform = platform_string();
         let tools = serde_json::json!({
             "tools": [
                 {
+                    "name": "platform_hints",
+                    "description": format!("Running on {}. Note: Claude Desktop only has access to directories allowed by server policy. Use 'list_accessible_directories' to see them.", platform),
+                    "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false}
+                },
+                {
                     "name": "read_bytes",
-                    "description": "Read bytes from a file (simple): {path, offset?, length?, encoding?}",
+                    "description": "Read bytes from a file (simple): {path, offset?, length?, encoding?}. Note: Only files within allowed roots are accessible; use 'list_accessible_directories' to view them.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -260,7 +376,7 @@ impl Server {
                 },
                 {
                     "name": "read_lines",
-                    "description": "Read lines from a file (simple): {path, line_offset?, line_count?, encoding?}",
+                    "description": "Read lines from a file (simple): {path, line_offset?, line_count?, encoding?}. Note: Only files within allowed roots are accessible; use 'list_accessible_directories' to view them.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -274,7 +390,7 @@ impl Server {
                 },
                 {
                     "name": "write_file",
-                    "description": "Write to a file (simple): {path, data, append?, create?, overwrite?, encoding?}",
+                    "description": "Write to a file (simple): {path, data, append?, create?, overwrite?, encoding?}. Note: Only files within allowed roots are accessible; use 'list_accessible_directories' to view them.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -290,25 +406,27 @@ impl Server {
                 },
                 {
                     "name": "stat_path",
-                    "description": "Get file/directory info: {path}",
+                    "description": "Get file/directory info: {path}. Note: Only files within allowed roots are accessible; use 'list_accessible_directories' to view them.",
                     "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}
                 },
                 {
                     "name": "list_directory",
-                    "description": "List directory entries: {path}",
+                    "description": "List directory entries: {path}. Note: Only directories within allowed roots are accessible; use 'list_accessible_directories' to view them.",
                     "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}
                 },
 
 
                 {
                     "name": "run_command",
-                    "description": "Execute a command from the policy-defined catalog",
+                    "description": run_cmd_desc,
                     "inputSchema": {
                         "type": "object",
                         "properties": {
                             "command_id": {
                                 "type": "string",
-                                "description": "ID of the command to run from the catalog"
+                                "description": "ID of the command to run from the catalog (see enum below); full catalog at mdmcp://commands/catalog",
+                                "enum": cmd_id_enum,
+                                "oneOf": cmd_id_oneof
                             },
                             "args": {
                                 "type": "array",
@@ -334,16 +452,6 @@ impl Server {
                     }
                 },
                 {
-                    "name": "list_available_commands",
-                    "description": "List all commands that can be executed through run_command, with their IDs, descriptions, and allowed arguments",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {},
-                        "additionalProperties": false
-                    }
-                }
-                ,
-                {
                     "name": "reload_policy",
                     "description": "Reload the server policy from disk without restarting",
                     "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false}
@@ -351,7 +459,7 @@ impl Server {
                 {
                     "name": "server_info",
                     "description": "Show server version, build time, current policy summary, and policy format details",
-                    "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false}
+                    "inputSchema": {"type": "object", "properties": {"format": {"type": "string", "enum": ["text", "json"], "default": "text"}}, "additionalProperties": false}
                 },
                 {
                     "name": "environment_defaults",
@@ -361,6 +469,11 @@ impl Server {
                 {
                     "name": "Documentation",
                     "description": "Usage guide for mdmcpcfg and mdmcpsrvr: install/update, manage policy (add/remove roots and commands)",
+                    "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false}
+                },
+                {
+                    "name": "list_resources",
+                    "description": "List available MCP resources (use resources/read to access)",
                     "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false}
                 }
             ]
@@ -398,6 +511,24 @@ impl Server {
         // Dispatch to the appropriate tool implementation
         match tool_name {
             "read_bytes" => {
+                if let Some(p) = tool_args.get("path").and_then(|v| v.as_str()) {
+                    if let Err(mut msg) = validate_file_path(p) {
+                        if let Some(s) = get_resource_suggestion(p) {
+                            msg.push_str(&format!("\n{}", s));
+                        }
+                        return create_error_response(
+                            id.clone(),
+                            McpErrorCode::InvalidArgs,
+                            Some(msg),
+                            Some(self.build_error_data(
+                                "tools/call",
+                                &id,
+                                "invalidPath",
+                                serde_json::json!({}),
+                            )),
+                        );
+                    }
+                }
                 let fs_params = serde_json::json!({
                     "path": tool_args.get("path"),
                     "encoding": tool_args.get("encoding").cloned().unwrap_or(serde_json::json!("utf8")),
@@ -448,6 +579,24 @@ impl Server {
                 create_success_response(id, result)
             }
             "read_lines" => {
+                if let Some(p) = tool_args.get("path").and_then(|v| v.as_str()) {
+                    if let Err(mut msg) = validate_file_path(p) {
+                        if let Some(s) = get_resource_suggestion(p) {
+                            msg.push_str(&format!("\n{}", s));
+                        }
+                        return create_error_response(
+                            id.clone(),
+                            McpErrorCode::InvalidArgs,
+                            Some(msg),
+                            Some(self.build_error_data(
+                                "tools/call",
+                                &id,
+                                "invalidPath",
+                                serde_json::json!({}),
+                            )),
+                        );
+                    }
+                }
                 let fs_params = serde_json::json!({
                     "path": tool_args.get("path"),
                     "encoding": tool_args.get("encoding").cloned().unwrap_or(serde_json::json!("utf8")),
@@ -499,6 +648,24 @@ impl Server {
             }
 
             "write_file" => {
+                if let Some(p) = tool_args.get("path").and_then(|v| v.as_str()) {
+                    if let Err(mut msg) = validate_file_path(p) {
+                        if let Some(s) = get_resource_suggestion(p) {
+                            msg.push_str(&format!("\n{}", s));
+                        }
+                        return create_error_response(
+                            id.clone(),
+                            McpErrorCode::InvalidArgs,
+                            Some(msg),
+                            Some(self.build_error_data(
+                                "tools/call",
+                                &id,
+                                "invalidPath",
+                                serde_json::json!({}),
+                            )),
+                        );
+                    }
+                }
                 // Simple writer: supports append/create/overwrite booleans
                 let append = tool_args
                     .get("append")
@@ -588,6 +755,22 @@ impl Server {
                         )
                     }
                 };
+                if let Err(mut msg) = validate_file_path(&path) {
+                    if let Some(s) = get_resource_suggestion(&path) {
+                        msg.push_str(&format!("\n{}", s));
+                    }
+                    return create_error_response(
+                        id.clone(),
+                        McpErrorCode::InvalidArgs,
+                        Some(msg),
+                        Some(self.build_error_data(
+                            "tools/call",
+                            &id,
+                            "invalidPath",
+                            serde_json::json!({}),
+                        )),
+                    );
+                }
                 let policy = { self.policy.read().unwrap().clone() };
                 match crate::fs_safety::canonicalize_path(std::path::Path::new(&path)) {
                     Ok(canon) => {
@@ -656,6 +839,22 @@ impl Server {
                         )
                     }
                 };
+                if let Err(mut msg) = validate_file_path(&path) {
+                    if let Some(s) = get_resource_suggestion(&path) {
+                        msg.push_str(&format!("\n{}", s));
+                    }
+                    return create_error_response(
+                        id.clone(),
+                        McpErrorCode::InvalidArgs,
+                        Some(msg),
+                        Some(self.build_error_data(
+                            "tools/call",
+                            &id,
+                            "invalidPath",
+                            serde_json::json!({}),
+                        )),
+                    );
+                }
                 let policy = { self.policy.read().unwrap().clone() };
                 match crate::fs_safety::canonicalize_path(std::path::Path::new(&path)) {
                     Ok(canon) => {
@@ -847,64 +1046,7 @@ impl Server {
                 );
                 create_success_response(id, result)
             }
-            "list_available_commands" => {
-                debug!("Listing available commands from policy");
-                let policy = { self.policy.read().unwrap().clone() };
-                // Create human-readable text content
-                let text_content = if policy.commands_by_id.is_empty() {
-                    "No commands available in policy.".to_string()
-                } else {
-                    let mut content = format!(
-                        "Available commands ({} total):\n\n",
-                        policy.commands_by_id.len()
-                    );
-                    for (i, (cmd_id, cmd_rule)) in policy.commands_by_id.iter().enumerate() {
-                        content.push_str(&format!("{}. **{}**\n", i + 1, cmd_id));
-                        content.push_str(&format!("   - Executable: {}\n", cmd_rule.rule.exec));
-                        if let Some(desc) = cmd_rule.rule.description.as_ref() {
-                            content.push_str(&format!("   - Description: {}\n", desc));
-                        }
-                        content
-                            .push_str(&format!("   - Timeout: {}ms\n", cmd_rule.rule.timeout_ms));
-                        content.push_str(&format!(
-                            "   - Max output: {} bytes\n",
-                            cmd_rule.rule.max_output_bytes
-                        ));
-                        if !cmd_rule.rule.args.allow.is_empty() {
-                            content.push_str(&format!(
-                                "   - Allowed args: {:?}\n",
-                                cmd_rule.rule.args.allow
-                            ));
-                        }
-                        if !cmd_rule.rule.args.fixed.is_empty() {
-                            content.push_str(&format!(
-                                "   - Fixed args: {:?}\n",
-                                cmd_rule.rule.args.fixed
-                            ));
-                        }
-                        content
-                            .push_str(&format!("   - Platforms: {:?}\n\n", cmd_rule.rule.platform));
-                    }
-                    content
-                };
-                // Return proper MCP tools/call response format
-                let result = serde_json::json!({
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": text_content
-                        }
-                    ],
-                    "isError": false
-                });
-                self.auditor.log_success(
-                    ctx,
-                    SuccessDetails {
-                        ..Default::default()
-                    },
-                );
-                create_success_response(id, result)
-            }
+
             "reload_policy" => match self.reload_policy().await {
                 Ok(new_policy) => {
                     let msg = format!(
@@ -917,6 +1059,7 @@ impl Server {
                         "content": [{"type": "text", "text": msg}],
                         "isError": false
                     });
+                    tracing::info!("Policy reloaded. Docs may be stale; run 'mdmcpcfg docs --build' to refresh.");
                     self.auditor.log_success(ctx, SuccessDetails::default());
                     create_success_response(id, result)
                 }
@@ -972,10 +1115,43 @@ impl Server {
                     policy.commands_by_id.len(),
                     policy_format
                 );
-                let result = serde_json::json!({
-                    "content": [{"type":"text","text": summary}],
-                    "isError": false
-                });
+                // Support optional format: { format: "json" | "text" }
+                let format = tool_args
+                    .get("format")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("text");
+                let result = if format.eq_ignore_ascii_case("json") {
+                    let json_obj = serde_json::json!({
+                        "server": {
+                            "name": "mdmcpsrvr",
+                            "version": version,
+                            "build": build_str,
+                            "protocolVersion": "2024-11-05"
+                        },
+                        "policy": {
+                            "hash": &policy.policy_hash[..16],
+                            "rootsCount": policy.allowed_roots_canonical.len(),
+                            "commandsCount": policy.commands_by_id.len()
+                        },
+                        "guidance": {
+                            "resourceAccess": [
+                                "Use resources/read for mdmcp:// URIs",
+                                "Use file tools (read_lines, read_bytes, write_file) for filesystem paths",
+                                "Run resources/list to see all available resources"
+                            ]
+                        }
+                    });
+                    serde_json::json!({
+                        "content": [{"type":"text","text": serde_json::to_string_pretty(&json_obj).unwrap()}],
+                        "isError": false
+                    })
+                } else {
+                    let guidance = "\nResource Access:\n- Use resources/read for mdmcp:// URIs\n- Use file tools (read_lines, read_bytes, write_file) for filesystem paths\n- Available resources: run resources/list\n";
+                    serde_json::json!({
+                        "content": [{"type":"text","text": format!("{}{}", summary, guidance)}],
+                        "isError": false
+                    })
+                };
                 self.auditor.log_success(ctx, SuccessDetails::default());
                 create_success_response(id, result)
             }
@@ -1102,7 +1278,7 @@ Using the MCP Tools
 - Commands: `run_command` executes catalog entries from the policy.
 - Discoverability:
   • `list_accessible_directories` — shows allowed roots.
-  • `list_available_commands` — shows command catalog details (including `description` when set).
+  • Use `mdmcp://commands/catalog` for a live command list (with help snippets when enabled).
   • On Windows, the default policy includes common system tools. Examples:
     - `where` (C:/Windows/System32/where.exe)
     - `findstr` (C:/Windows/System32/findstr.exe)
@@ -1152,6 +1328,24 @@ Notes
                 );
                 let result = serde_json::json!({
                     "content": [{"type": "text", "text": doc}],
+                    "isError": false
+                });
+                self.auditor.log_success(ctx, SuccessDetails::default());
+                create_success_response(id, result)
+            }
+            "list_resources" => {
+                let resources = vec![
+                    ("mdmcp://doc/tools", "Tools & Commands Overview (Markdown)"),
+                    ("mdmcp://commands/catalog", "Command Catalog (JSON)"),
+                    ("mdmcp://server/capabilities", "Server Capabilities (JSON)"),
+                ];
+                let mut text =
+                    String::from("Available resources (use resources/read to access):\n\n");
+                for (uri, desc) in resources {
+                    text.push_str(&format!("- {} — {}\n", uri, desc));
+                }
+                let result = serde_json::json!({
+                    "content": [{"type":"text","text": text}],
                     "isError": false
                 });
                 self.auditor.log_success(ctx, SuccessDetails::default());
@@ -1397,9 +1591,19 @@ Notes
         // Define available resources that expose server information
         let resources = vec![
             ResourceInfo {
-                uri: "mdmcp://server/config".to_string(),
-                name: "Server Configuration".to_string(),
-                description: Some("Current server policy configuration and settings".to_string()),
+                uri: "mdmcp://doc/tools".to_string(),
+                name: "Tools & Commands Overview".to_string(),
+                description: Some(
+                    "One-stop Markdown doc of MCP tools and command catalog".to_string(),
+                ),
+                mime_type: Some("text/markdown".to_string()),
+            },
+            ResourceInfo {
+                uri: "mdmcp://commands/catalog".to_string(),
+                name: "Command Catalog".to_string(),
+                description: Some(
+                    "JSON catalog - access via resources/read, not file tools".to_string(),
+                ),
                 mime_type: Some("application/json".to_string()),
             },
             ResourceInfo {
@@ -1407,14 +1611,6 @@ Notes
                 name: "Server Capabilities".to_string(),
                 description: Some(
                     "Detailed information about server capabilities and features".to_string(),
-                ),
-                mime_type: Some("application/json".to_string()),
-            },
-            ResourceInfo {
-                uri: "mdmcp://server/status".to_string(),
-                name: "Server Status".to_string(),
-                description: Some(
-                    "Current server runtime status and health information".to_string(),
                 ),
                 mime_type: Some("application/json".to_string()),
             },
@@ -1461,28 +1657,99 @@ Notes
         };
         debug!("Handling resources/read request for: {}", read_params.uri);
         let contents = match read_params.uri.as_str() {
-            "mdmcp://server/config" => {
+            "mdmcp://doc/tools" => {
+                // Serve doc cache file if present
+                if let Some(dir) = self.config_path.parent() {
+                    let path = dir.join("doc.cache.md");
+                    match std::fs::read_to_string(&path) {
+                        Ok(text) => vec![ResourceContent::Text { text, mime_type: Some("text/markdown".to_string()) }],
+                        Err(_) => vec![ResourceContent::Text { text: "Documentation cache not found. Run `mdmcpcfg docs --build` to generate it.".into(), mime_type: Some("text/markdown".to_string()) }],
+                    }
+                } else {
+                    vec![ResourceContent::Text { text: "Documentation cache not found. Run `mdmcpcfg docs --build` to generate it.".into(), mime_type: Some("text/markdown".to_string()) }]
+                }
+            }
+            "mdmcp://commands/catalog" => {
+                // Build a JSON array of command metadata with optional help snippets
                 let policy = { self.policy.read().unwrap().clone() };
-                let config_info = serde_json::json!({
-                    "version": env!("CARGO_PKG_VERSION"),
-                    "policy_hash": &policy.policy_hash[..16],
-                    "allowed_roots": policy.allowed_roots_canonical.len(),
-                    "available_commands": policy.commands_by_id.len(),
-                    "capabilities": ["tools", "prompts", "resources"]
-                });
+                let mut items: Vec<serde_json::Value> = Vec::new();
+
+                // Create a temp catalog for validation/execution
+                let catalog = CommandCatalog::new(Arc::as_ref(&policy).clone());
+
+                for (id, compiled) in policy.commands_by_id.iter() {
+                    let rule = &compiled.rule;
+                    let mut obj = serde_json::json!({
+                        "id": id,
+                        "description": rule.description.clone().unwrap_or_default(),
+                        "exec": rule.exec,
+                        "platform": rule.platform,
+                        "allow_any_args": rule.allow_any_args,
+                        "args": {
+                            "fixed": rule.args.fixed,
+                            "allow": rule.args.allow,
+                            "patterns": rule.args.patterns.iter().map(|p| &p.value).collect::<Vec<_>>()
+                        }
+                    });
+
+                    // Optional help capture
+                    if rule.help_capture.enabled && !rule.help_capture.args.is_empty() {
+                        let params = mdmcp_common::CmdRunParams {
+                            command_id: id.clone(),
+                            args: rule.help_capture.args.clone(),
+                            cwd: None,
+                            stdin: String::new(),
+                            env: std::collections::HashMap::new(),
+                            timeout_ms: Some(rule.help_capture.timeout_ms),
+                        };
+                        if let Ok(validated) = catalog.validate_command(&params) {
+                            if let Ok(exec) = catalog.execute_command(validated).await {
+                                let mut out = if !exec.stdout.is_empty() {
+                                    exec.stdout
+                                } else {
+                                    exec.stderr
+                                };
+                                let mut truncated = false;
+                                if out.len() as u64 > rule.help_capture.max_bytes {
+                                    out = out
+                                        .chars()
+                                        .take(rule.help_capture.max_bytes as usize)
+                                        .collect();
+                                    truncated = true;
+                                }
+                                let cleaned = strip_ansi(&out);
+                                let snippet = if truncated {
+                                    format!("{}\n(truncated)", cleaned)
+                                } else {
+                                    cleaned
+                                };
+                                if let Some(map) = obj.as_object_mut() {
+                                    map.insert(
+                                        "help_snippet".to_string(),
+                                        serde_json::json!(snippet),
+                                    );
+                                }
+                            }
+                        }
+                    }
+
+                    items.push(obj);
+                }
+
+                let json = serde_json::to_string_pretty(&items).unwrap_or("[]".to_string());
                 vec![ResourceContent::Text {
-                    text: serde_json::to_string_pretty(&config_info).unwrap(),
+                    text: json,
                     mime_type: Some("application/json".to_string()),
                 }]
             }
+
             "mdmcp://server/capabilities" => {
                 let capabilities_info = serde_json::json!({
                     "tools": {
                         "read_file": "Read files within allowed directories",
                         "write_file": "Write files within allowed directories with policy constraints",
                         "run_command": "Execute pre-approved commands from the catalog",
-                        "list_accessible_directories": "List all directories accessible for file operations",
-                        "list_available_commands": "List all commands available for execution"
+                        "list_accessible_directories": "List all directories accessible for file operations"
                     },
                     "prompts": {
                         "file_operation": "Helper for file read/write operations",
@@ -1490,31 +1757,11 @@ Notes
                         "server_status": "Helper for server status queries"
                     },
                     "resources": {
-                        "mdmcp://server/config": "Server configuration information",
-                        "mdmcp://server/capabilities": "Detailed capability information",
-                        "mdmcp://server/status": "Runtime status information"
+                        "mdmcp://server/capabilities": "Detailed capability information"
                     }
                 });
                 vec![ResourceContent::Text {
                     text: serde_json::to_string_pretty(&capabilities_info).unwrap(),
-                    mime_type: Some("application/json".to_string()),
-                }]
-            }
-            "mdmcp://server/status" => {
-                let policy = { self.policy.read().unwrap().clone() };
-                let status_info = serde_json::json!({
-                    "server": "mdmcpsrvr",
-                    "version": env!("CARGO_PKG_VERSION"),
-                    "protocol_version": "2024-11-05",
-                    "status": "running",
-                    "policy": {
-                        "hash": &policy.policy_hash[..16],
-                        "roots_count": policy.allowed_roots_canonical.len(),
-                        "commands_count": policy.commands_by_id.len()
-                    }
-                });
-                vec![ResourceContent::Text {
-                    text: serde_json::to_string_pretty(&status_info).unwrap(),
                     mime_type: Some("application/json".to_string()),
                 }]
             }
@@ -2556,6 +2803,7 @@ mod tests {
                     "macos".to_string(),
                 ],
                 allow_any_args: false,
+                help_capture: Default::default(),
             }],
             logging: LoggingConfig::default(),
             limits: LimitsConfig::default(),
@@ -2695,5 +2943,24 @@ mod tests {
         );
         assert_eq!(generate_request_id(&RpcId::Number(42)), "42");
         assert_eq!(generate_request_id(&RpcId::Null), "null");
+    }
+
+    #[tokio::test]
+    async fn reload_policy_success_rebuilds_catalog() {
+        let server = create_test_server().await;
+        // Build a minimal valid policy YAML pointing to the same allowed root
+        let root0 = { server.policy.read().unwrap().allowed_roots_canonical[0].clone() };
+        let yaml = format!(
+            "version: 1\ndeny_network_fs: false\nallowed_roots:\n  - {}\nwrite_rules: []\ncommands: []\n",
+            root0.to_string_lossy()
+        );
+        // Sanity-check compile independently
+        let parsed = mdmcp_policy::Policy::from_yaml(&yaml).unwrap();
+        let _compiled = parsed.compile().unwrap();
+        std::fs::write(&server.config_path, yaml).unwrap();
+        let res = server.reload_policy().await;
+        assert!(res.is_ok());
+        // Catalog should rebuild without error when fetching read lock
+        let _guard = server.command_catalog.read().unwrap();
     }
 }

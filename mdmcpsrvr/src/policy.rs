@@ -332,6 +332,7 @@ commands:
                 max_output_bytes: 1000000,
                 platform: vec!["linux".to_string()],
                 allow_any_args: false,
+                help_capture: Default::default(),
             }],
             logging: LoggingConfig::default(),
             limits: LimitsConfig::default(),

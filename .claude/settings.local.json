@@ -4,7 +4,18 @@
       "Read(/C:\\language\\mdmcp/**)",
       "Read(/C:\\language\\mdmcp\\mdmcpcfg/**)",
       "Read(/C:\\language\\mdmcp\\mdmcpsrvr/**)",
-      "Read(/C:\\language\\mdmcp\\mdmcpcfg\\src/**)"
+      "Read(/C:\\language\\mdmcp\\mdmcpcfg\\src/**)",
+      "Bash(cargo check:*)",
+      "Bash(cargo build:*)",
+      "Bash(cargo run:*)",
+      "Bash(find:*)",
+      "Bash(cargo test:*)",
+      "Bash(for:*)",
+      "Bash(do echo -n \"$file: \")",
+      "Bash(grep:*)",
+      "Bash(done)",
+      "Bash(cat:*)",
+      "Bash(awk:*)"
     ],
     "deny": [],
     "ask": []

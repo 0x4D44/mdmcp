@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This repository contains `mdmcp` - a minimal, policy-driven Model Context Protocol (MCP) server written in Rust, plus a configuration CLI tool. The project provides a hardened MCP server that exposes only three capabilities (`fs.read`, `fs.write`, `cmd.run`) with strict policy-based access controls.
 
-**Current Status**: Early development phase with design specification complete but implementation just beginning.
+**Current Status**: Active development with core server and policy system implemented (v0.3.6).
 
 ## Repository Structure
 
@@ -27,8 +27,9 @@ This is a Cargo workspace containing:
 - `cargo run -p mdmcpsrvr -- --config policy.yaml --stdio` - Run MCP server
 - `cargo run -p mdmcpcfg -- <subcommand>` - Run configuration CLI
 - `cargo test --workspace` - Run all tests
-- `cargo clippy -- -D warnings` - Lint with strict warnings
-- `cargo fmt --check` - Check formatting
+- `cargo test -p mdmcp_policy` - Run tests for specific package
+- `cargo clippy --workspace -- -D warnings` - Lint with strict warnings
+- `cargo fmt --all --check` - Check formatting across workspace
 
 ### Schema Generation (when implemented)
 - `cargo run -p mdmcp_policy --example emit-schema > policy.schema.json` - Generate JSON schema
@@ -87,13 +88,21 @@ The server enforces strict policies through:
 
 ## Development Workflow
 
-Following the specification's recommended implementation order:
+Implementation progress:
 
-1. **Foundation**: Workspace setup, shared crates (`mdmcp_policy`, `mdmcp_common`)
-2. **Policy System**: YAML parsing, validation, schema generation
-3. **MCP Server**: RPC plumbing, protocol handlers, security enforcement
-4. **Configuration CLI**: Installation, policy management, diagnostics
-5. **Testing**: Unit tests for security controls, E2E tests for full workflow
+1. ✅ **Foundation**: Workspace setup, shared crates (`mdmcp_policy`, `mdmcp_common`)
+2. ✅ **Policy System**: YAML parsing, validation, schema generation  
+3. ✅ **MCP Server**: RPC plumbing, protocol handlers, security enforcement
+4. 🚧 **Configuration CLI**: Installation, policy management, diagnostics (partial)
+5. 🚧 **Testing**: Unit tests for security controls, E2E tests for full workflow (ongoing)
+
+### Working with Modified Files
+The repository currently has modifications in:
+- `crates/mdmcp_policy/src/lib.rs` - Core policy engine
+- `mdmcpcfg/src/commands/install.rs` - Installation command
+- `mdmcpsrvr/src/server.rs` - Main server implementation
+
+Use `git status` and `git diff` to review changes before committing.
 
 ## Testing Strategy
 

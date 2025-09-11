@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 // (no additional imports)
 use std::path::Path;
 
+use crate::commands::docs;
 use crate::io::{read_file, write_file, Paths};
 
 /// Show current policy configuration
@@ -110,6 +111,13 @@ pub async fn edit() -> Result<()> {
         validate_merged(&paths).await?;
     } else {
         validate(Some(paths.policy_file.to_string_lossy().to_string())).await?;
+    }
+
+    // Auto-generate documentation cache (non-blocking semantics)
+    println!("🧱 Building documentation cache...");
+    match docs::build().await {
+        Ok(()) => println!("✅ Documentation cache built"),
+        Err(e) => println!("⚠️  Failed to build documentation cache: {}", e),
     }
 
     Ok(())
@@ -350,6 +358,13 @@ pub async fn add_command(
 
     println!("✅ Added command '{}' to policy", id);
     println!("💾 Policy file updated: {}", paths.policy_file.display());
+
+    // Auto-generate documentation cache (non-blocking semantics)
+    println!("🧱 Building documentation cache...");
+    match docs::build().await {
+        Ok(()) => println!("✅ Documentation cache built"),
+        Err(e) => println!("⚠️  Failed to build documentation cache: {}", e),
+    }
 
     Ok(())
 }
@@ -621,4 +636,177 @@ fn validate_policy_structure(policy: &Value) -> Result<()> {
     println!("   ✅ Found {} commands", commands.len());
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+    use std::sync::{Mutex, OnceLock};
+
+    static TEST_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    fn test_guard() -> &'static Mutex<()> {
+        TEST_ENV_LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn exec_path() -> &'static str {
+        if cfg!(target_os = "windows") {
+            "C:/Windows/System32/cmd.exe"
+        } else {
+            "/bin/echo"
+        }
+    }
+
+    #[test]
+    fn test_validate_policy_structure_happy_path() {
+        let yaml = format!(
+            "version: 1\nallowed_roots:\n  - /tmp\ncommands:\n  - id: echo\n    exec: {}\n",
+            exec_path()
+        );
+        let value: Value = serde_yaml::from_str(&yaml).unwrap();
+        validate_policy_structure(&value).expect("valid structure");
+    }
+
+    #[test]
+    fn test_validate_policy_structure_missing_fields() {
+        let yaml = "version: 1\nallowed_roots: []\n"; // missing commands
+        let value: Value = serde_yaml::from_str(yaml).unwrap();
+        let err = validate_policy_structure(&value).unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains("Missing required field"));
+    }
+
+    #[test]
+    fn test_validate_policy_structure_duplicate_ids() {
+        let yaml = format!(
+            "version: 1\nallowed_roots:\n  - /tmp\ncommands:\n  - id: echo\n    exec: {}\n  - id: echo\n    exec: {}\n",
+            exec_path(),
+            exec_path()
+        );
+        let value: Value = serde_yaml::from_str(&yaml).unwrap();
+        let err = validate_policy_structure(&value).unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains("Duplicate command ID"));
+    }
+
+    #[test]
+    fn test_print_policy_summary_small_policy() {
+        let yaml = format!(
+            "version: 1\nallowed_roots:\n  - /tmp\ncommands:\n  - id: echo\n    exec: {}\nwrite_rules: []\n",
+            exec_path()
+        );
+        let value: Value = serde_yaml::from_str(&yaml).unwrap();
+        // Ensure it doesn't panic and prints some summary
+        print_policy_summary(&value).expect("summary ok");
+    }
+
+    #[tokio::test]
+    async fn test_add_root_and_write_rule_persistence() {
+        let _guard = test_guard().lock().unwrap();
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        // Redirect Paths::new to a temp root
+        std::env::set_var("MDMCP_TEST_ROOT", root);
+        let cfg_dir = root.join("config");
+        fs::create_dir_all(&cfg_dir).unwrap();
+        let user = cfg_dir.join("policy.user.yaml");
+        let initial = "version: 1\ndeny_network_fs: false\nallowed_roots: []\nwrite_rules: []\ncommands: []\n";
+        fs::write(&user, initial).unwrap();
+
+        let new_root = root.join("workspace");
+        fs::create_dir_all(&new_root).unwrap();
+        super::add_root(new_root.to_string_lossy().to_string(), true)
+            .await
+            .expect("add_root ok");
+
+        let updated = fs::read_to_string(&user).unwrap();
+        assert!(updated.contains(&*new_root.to_string_lossy()));
+        assert!(updated.contains("write_rules"));
+        std::env::remove_var("MDMCP_TEST_ROOT");
+    }
+
+    #[tokio::test]
+    async fn test_add_command_id_uniqueness_error() {
+        let _guard = test_guard().lock().unwrap();
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        std::env::set_var("MDMCP_TEST_ROOT", root);
+        let cfg_dir = root.join("config");
+        fs::create_dir_all(&cfg_dir).unwrap();
+        let user = cfg_dir.join("policy.user.yaml");
+        let initial = "version: 1\ndeny_network_fs: false\nallowed_roots: []\nwrite_rules: []\ncommands: []\n";
+        fs::write(&user, initial).unwrap();
+
+        super::add_command(
+            "echo".into(),
+            if cfg!(target_os = "windows") { "C:/Windows/System32/cmd.exe".into() } else { "/bin/echo".into() },
+            vec![],
+            vec![],
+        )
+        .await
+        .expect("first add ok");
+
+        let err = super::add_command(
+            "echo".into(),
+            if cfg!(target_os = "windows") { "C:/Windows/System32/cmd.exe".into() } else { "/bin/echo".into() },
+            vec![],
+            vec![],
+        )
+        .await
+        .unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains("already exists"));
+        std::env::remove_var("MDMCP_TEST_ROOT");
+    }
+
+    #[tokio::test]
+    async fn test_set_unset_env_for_command() {
+        let _guard = test_guard().lock().unwrap();
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        std::env::set_var("MDMCP_TEST_ROOT", root);
+        let cfg_dir = root.join("config");
+        fs::create_dir_all(&cfg_dir).unwrap();
+        let user = cfg_dir.join("policy.user.yaml");
+        let exec = if cfg!(target_os = "windows") { "C:/Windows/System32/cmd.exe" } else { "/bin/echo" };
+        let initial = format!(
+            "version: 1\ndeny_network_fs: false\nallowed_roots: []\nwrite_rules: []\ncommands:\n  - id: testcmd\n    exec: {}\n",
+            exec
+        );
+        fs::write(&user, initial).unwrap();
+
+        super::set_env("testcmd".into(), vec!["FOO=bar".into(), "BAZ=qux".into()])
+            .await
+            .expect("set_env ok");
+        let after_set = fs::read_to_string(&user).unwrap();
+        assert!(after_set.contains("FOO"));
+        assert!(after_set.contains("BAZ"));
+
+        super::unset_env("testcmd".into(), vec!["FOO".into()])
+            .await
+            .expect("unset_env ok");
+        let after_unset = fs::read_to_string(&user).unwrap();
+        assert!(!after_unset.contains("FOO:"));
+        assert!(after_unset.contains("BAZ"));
+        std::env::remove_var("MDMCP_TEST_ROOT");
+    }
+
+    #[tokio::test]
+    async fn test_validate_merged_with_core_and_user() {
+        let _guard = test_guard().lock().unwrap();
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        std::env::set_var("MDMCP_TEST_ROOT", root);
+        let cfg_dir = root.join("config");
+        fs::create_dir_all(&cfg_dir).unwrap();
+        let user = cfg_dir.join("policy.user.yaml");
+        let core = cfg_dir.join("policy.core.yaml");
+        fs::write(&user, "version: 1\ndeny_network_fs: false\nallowed_roots: []\nwrite_rules: []\ncommands: []\n").unwrap();
+        fs::write(&core, "version: 1\ndeny_network_fs: true\nallowed_roots: []\nwrite_rules: []\ncommands: []\n").unwrap();
+
+        let paths = Paths::new().unwrap();
+        super::validate_merged(&paths).await.expect("merged validation ok");
+        std::env::remove_var("MDMCP_TEST_ROOT");
+    }
 }

@@ -90,6 +90,36 @@ pub struct CommandRule {
     /// If true, skip argument validation (development-friendly default)
     #[serde(default = "default_allow_any_args")]
     pub allow_any_args: bool,
+    /// Optional: configuration for capturing help text for documentation
+    #[serde(default)]
+    pub help_capture: HelpCaptureConfig,
+}
+
+/// Configuration controlling optional help capture for commands
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[serde(deny_unknown_fields)]
+pub struct HelpCaptureConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// The arguments to pass to the command to print help (e.g., ["--help"]).
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default = "default_help_timeout_ms")]
+    pub timeout_ms: u64,
+    #[serde(default = "default_help_max_bytes")]
+    pub max_bytes: u64,
+}
+
+impl Default for HelpCaptureConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            args: Vec::new(),
+            timeout_ms: default_help_timeout_ms(),
+            max_bytes: default_help_max_bytes(),
+        }
+    }
 }
 
 /// Argument validation policy for commands
@@ -547,6 +577,14 @@ fn default_max_cmd_concurrency() -> u32 {
     2
 }
 
+fn default_help_timeout_ms() -> u64 {
+    1_500
+}
+
+fn default_help_max_bytes() -> u64 {
+    4_096
+}
+
 fn default_allow_any_args() -> bool {
     true
 }
@@ -736,6 +774,7 @@ commands:
                 max_output_bytes: 1000000,
                 platform: vec!["linux".to_string()],
                 allow_any_args: false,
+                help_capture: Default::default(),
             },
             exec_canonical: PathBuf::from("/bin/echo"),
             arg_patterns: vec![],
