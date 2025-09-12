@@ -62,7 +62,7 @@ async fn main() -> Result<()> {
 
     // Log a summary of the process environment (keys only) to help diagnose env propagation from clients
     #[cfg(windows)]
-    {
+    if std::env::var("MDMCP_LOG_ENV_KEYS").is_ok() {
         let mut keys: Vec<String> = std::env::vars().map(|(k, _)| k).collect();
         keys.sort_unstable_by_key(|a| a.to_ascii_lowercase());
         let total = keys.len();
@@ -119,6 +119,14 @@ async fn main() -> Result<()> {
 
     // Create server instance
     let server = server::Server::new(Arc::new(policy), config_path.clone()).await?;
+
+    // Graceful shutdown on Ctrl+C
+    tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            tracing::info!("Shutdown signal received. Exiting.");
+            std::process::exit(0);
+        }
+    });
 
     if cli.stdio {
         run_stdio_server(server).await?;

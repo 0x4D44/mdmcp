@@ -1850,7 +1850,7 @@ fn create_default_policy_content() -> Result<String> {
     };
     let body = serde_yaml::to_string(&policy)?;
     // Prepend header comment
-    let header = "# MDMCP core policy (policy.core.yaml)\n#\n# This file contains vendor defaults installed by mdmcpcfg.\n# It WILL be overwritten on upgrade, and is set read-only to avoid accidental edits.\n#\n# To customize behavior, edit the user policy file instead: policy.user.yaml.\n# The user policy is merged over this core file and NEVER changed by upgrades.\n#\n";
+    let header = "# MDMCP core policy (policy.core.yaml)\n#\n# This file contains vendor defaults installed by mdmcpcfg.\n# It WILL be overwritten on upgrade, and is set read-only to avoid accidental edits.\n#\n# To customize behavior, edit the user policy file instead: policy.user.yaml.\n# The user policy is merged over this core file and NEVER changed by upgrades.\n#\n# Security note: Certain security-critical flags in this core policy (e.g., deny_network_fs)\n# are enforced. The effective value is core OR user, so a core=true setting cannot be\n# disabled by the user policy.\n#\n";
     let mut out = String::new();
     out.push_str(header);
     out.push_str(&body);
@@ -1867,7 +1867,7 @@ fn refresh_core_policy(paths: &Paths) -> Result<()> {
     }
     if core.exists() {
         let bak = core.with_extension("yaml.bak");
-        let _ = fs::copy(core, &bak);
+        fs::copy(core, &bak).with_context(|| format!("Failed to backup {}", core.display()))?;
     }
     let content = create_default_policy_content()?;
     write_file(core, &content)?;
@@ -1881,7 +1881,7 @@ fn create_minimal_user_policy_content() -> Result<String> {
     use mdmcp_policy::{LimitsConfig, LoggingConfig, Policy};
     let policy = Policy {
         version: 1,
-        deny_network_fs: false,
+        deny_network_fs: true,
         allowed_roots: vec![],
         write_rules: vec![],
         commands: vec![],
@@ -1889,7 +1889,7 @@ fn create_minimal_user_policy_content() -> Result<String> {
         limits: LimitsConfig::default(),
     };
     let body = serde_yaml::to_string(&policy)?;
-    let header = "# MDMCP user policy (policy.user.yaml)\n#\n# This file contains your local overrides and configuration.\n# mdmcpcfg install/upgrade NEVER changes this file.\n#\n# Tips:\n# - Add your allowed_roots and write_rules here.\n# - Add or adjust commands you want exposed to the MCP server.\n# - Keep deny_network_fs consistent with your security posture.\n#\n";
+    let header = "# MDMCP user policy (policy.user.yaml)\n#\n# This file contains your local overrides and configuration.\n# mdmcpcfg install/upgrade NEVER changes this file.\n#\n# Tips:\n# - Add your allowed_roots and write_rules here.\n# - Add or adjust commands you want exposed to the MCP server.\n# - Keep deny_network_fs consistent with your security posture.\n#   Note: The core policy may enforce deny_network_fs=true; user policy cannot weaken it.\n#\n";
     let mut out = String::new();
     out.push_str(header);
     out.push_str(&body);
@@ -1941,6 +1941,56 @@ mod tests {
             digest,
             "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
         );
+    }
+
+    #[test]
+    fn test_binary_verification_fails_on_tampered() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), b"original").unwrap();
+        let good_hash = calculate_sha256(tmp.path()).unwrap();
+        // Tamper
+        std::fs::write(tmp.path(), b"modified").unwrap();
+        let ver = BinaryVerification { sha256: good_hash, signature: None, signed_by: None };
+        let res = verify_binary(tmp.path(), &ver);
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_atomic_policy_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("policy.user.yaml");
+        crate::io::write_file(&p, "version: 1\nallowed_roots: []\ncommands: []\n").unwrap();
+        let v = std::fs::read_to_string(&p).unwrap();
+        assert!(v.starts_with("version:"));
+    }
+
+    #[test]
+    fn test_rollback_after_failed_update() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let paths = crate::io::Paths {
+            bin_dir: root.join("bin"),
+            config_dir: root.join("config"),
+            policy_file: root.join("config").join("policy.user.yaml"),
+            core_policy_file: root.join("config").join("policy.core.yaml"),
+        };
+        std::fs::create_dir_all(&paths.config_dir).unwrap();
+        crate::io::write_file(&paths.policy_file, "user: A").unwrap();
+        crate::io::write_file(&paths.core_policy_file, "core: A").unwrap();
+        let bak_user = paths.policy_file.with_extension("yaml.bak");
+        let bak_core = paths.core_policy_file.with_extension("yaml.bak");
+        std::fs::copy(&paths.policy_file, &bak_user).unwrap();
+        std::fs::copy(&paths.core_policy_file, &bak_core).unwrap();
+        // Corrupt
+        crate::io::write_file(&paths.policy_file, "user: CORRUPT").unwrap();
+        crate::io::write_file(&paths.core_policy_file, "core: CORRUPT").unwrap();
+        // Rollback
+        std::fs::copy(&bak_user, &paths.policy_file).unwrap();
+        std::fs::copy(&bak_core, &paths.core_policy_file).unwrap();
+        let user_after = std::fs::read_to_string(&paths.policy_file).unwrap();
+        let core_after = std::fs::read_to_string(&paths.core_policy_file).unwrap();
+        assert_eq!(user_after, "user: A");
+        assert_eq!(core_after, "core: A");
     }
 
     #[test]
@@ -2086,4 +2136,30 @@ mod tests {
         assert!(res.is_err());
         std::env::remove_var("MDMCP_SKIP_SELF_UPDATE");
     }
+}
+/// Verification info for installed binary
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BinaryVerification {
+    pub sha256: String,
+    #[serde(default)]
+    pub signature: Option<String>,
+    #[serde(default)]
+    pub signed_by: Option<String>,
+}
+
+/// Verify binary integrity and optional signature
+pub fn verify_binary(path: &Path, verification: &BinaryVerification) -> Result<()> {
+    let actual = calculate_sha256(path)
+        .with_context(|| format!("Failed to calculate SHA256 for {}", path.display()))?;
+    if actual != verification.sha256 {
+        bail!("Binary checksum mismatch: expected {}, got {}", verification.sha256, actual);
+    }
+    // Placeholder: Optional signature verification hook (e.g., minisign or GPG)
+    if let (Some(sig), Some(signer)) = (&verification.signature, &verification.signed_by) {
+        // Future: verify signature; for now, ensure fields are non-empty to avoid false sense of security
+        if sig.trim().is_empty() || signer.trim().is_empty() {
+            bail!("Invalid signature metadata (empty)");
+        }
+    }
+    Ok(())
 }

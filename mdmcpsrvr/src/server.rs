@@ -30,7 +30,18 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use tracing::{debug, error, info};
+use once_cell::sync::Lazy;
 
+static ANSI_RE_FAST: Lazy<regex::Regex> = Lazy::new(|| {
+    // Explicit ESC byte avoids portability issues in patches
+    regex::Regex::new(r"\x1B\[[0-?]*[ -/]*[@-~]").expect("valid ANSI regex")
+});
+
+fn strip_ansi_fast(input: &str) -> String {
+    ANSI_RE_FAST.replace_all(input, "").to_string()
+}
+
+#[allow(dead_code)]
 fn strip_ansi(input: &str) -> String {
     let re = regex::Regex::new(r"\[[0-?]*[ -/]*[@-~]").unwrap();
     re.replace_all(input, "").to_string()
@@ -89,6 +100,44 @@ fn get_resource_suggestion(uri: &str) -> Option<String> {
         None
     }
 }
+fn truncate_str(s: &str, max: usize) -> String {
+    // Truncate on UTF-8 character boundary to avoid invalid slices.
+    let mut it = s.chars();
+    let mut out = String::with_capacity(std::cmp::min(s.len(), max));
+    for i in 0..max {
+        match it.next() {
+            Some(c) => out.push(c),
+            None => break,
+        }
+        if i + 1 == max {
+            if it.next().is_some() {
+                out.push('…');
+            }
+            break;
+        }
+    }
+    out
+}
+
+fn is_path_absolute_like(p: &str) -> bool {
+    use std::path::Path;
+    let path = Path::new(p);
+    if path.is_absolute() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        let b = p.as_bytes();
+        if b.len() >= 2 && b[1] == b':' && b[0].is_ascii_alphabetic() {
+            return true;
+        }
+        if p.starts_with("\\\\") {
+            // UNC paths
+            return true;
+        }
+    }
+    false
+}
 
 /// Main MCP server instance
 pub struct Server {
@@ -100,6 +149,28 @@ pub struct Server {
     next_command_cwd: RwLock<Option<PathBuf>>,
 }
 impl Server {
+    /// Build a minimal structured error context for error.data.context
+    /// This keeps payloads small and stable while giving clients a typed hint,
+    /// a short user-facing message, retryability, and optional suggestions.
+    fn minimal_error_context(
+        &self,
+        error_type: &str,
+        user_message: &str,
+        retryable: bool,
+        suggestions: &[&str],
+    ) -> serde_json::Value {
+        let mut suggs: Vec<String> = Vec::new();
+        for s in suggestions.iter().take(3) {
+            suggs.push(truncate_str(s, 256));
+        }
+        serde_json::json!({
+            "schemaVersion": 1,
+            "type": error_type,
+            "userMessage": truncate_str(user_message, 256),
+            "suggestions": suggs,
+            "retryable": retryable
+        })
+    }
     /// Build standardized error.data payload with common fields plus extras
     fn build_error_data(
         &self,
@@ -122,6 +193,25 @@ impl Server {
                 for (k, v) in extra_obj {
                     base_obj.insert(k, v);
                 }
+            }
+        }
+        // Ensure a nested structured context exists under data.context
+        if let serde_json::Value::Object(ref mut base_obj) = base {
+            let mut has_context = false;
+            if let Some(ctx) = base_obj.get("context") {
+                if ctx.is_object() {
+                    has_context = true;
+                }
+            }
+            if !has_context {
+                let ctx = serde_json::json!({
+                    "schemaVersion": 1,
+                    "type": "internal_error",
+                    "userMessage": truncate_str(reason, 256),
+                    "suggestions": [],
+                    "retryable": false
+                });
+                base_obj.insert("context".to_string(), ctx);
             }
         }
         base
@@ -378,7 +468,7 @@ impl Server {
                 },
                 {
                     "name": "set_working_directory",
-                    "description": "Change working directory for subsequent commands",
+                    "description": "Change working directory for subsequent run_command calls and for relative file tool paths",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -569,15 +659,80 @@ impl Server {
                     "second": now.second(),
                     "weekday": weekday
                 });
-                let payload = serde_json::json!({
-                    "datetime": iso,
-                    "timezone": tz,
-                    "offset": offset,
-                    "unix": unix,
-                    "components": components
-                });
+                // Optional format: iso8601 | unix | human
+                let format = tool_args
+                    .get("format")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("json");
+                let result = match format {
+                    "iso8601" => serde_json::json!({
+                        "content": [{"type": "text", "text": iso}],
+                        "isError": false
+                    }),
+                    "unix" => serde_json::json!({
+                        "content": [{"type": "text", "text": unix.to_string()}],
+                        "isError": false
+                    }),
+                    "human" => {
+                        let human = format!(
+                            "{} {:04}-{:02}-{:02} {:02}:{:02}:{:02} (UTC{}) — {}",
+                            weekday,
+                            now.year(),
+                            now.month(),
+                            now.day(),
+                            now.hour(),
+                            now.minute(),
+                            now.second(),
+                            offset,
+                            tz
+                        );
+                        serde_json::json!({
+                            "content": [{"type": "text", "text": human}],
+                            "isError": false
+                        })
+                    }
+                    _ => {
+                        // Default: JSON payload for structured clients
+                        let payload = serde_json::json!({
+                            "datetime": iso,
+                            "timezone": tz,
+                            "offset": offset,
+                            "unix": unix,
+                            "components": components
+                        });
+                        serde_json::json!({
+                            "content": [{"type": "text", "text": serde_json::to_string_pretty(&payload).unwrap_or_else(|_| payload.to_string())}],
+                            "isError": false
+                        })
+                    }
+                };
+                self.auditor.log_success(ctx, SuccessDetails::default());
+                create_success_response(id, result)
+            }
+            "platform_hints" => {
+                // Return a brief set of platform hints and capabilities
+                let plat = platform_string();
+                let is_wsl = if plat.contains("WSL") { " (WSL)" } else { "" };
+                let mut msg = format!(
+                    "Running on {}{}.\n- File tools operate within allowed roots only.\n- Use 'list_accessible_directories' to discover accessible paths.\n- Use 'run_command' with a catalog 'command_id' to execute approved tools.",
+                    plat, is_wsl
+                );
+                // Append a quick summary of root count and some examples
+                let pol = { self.policy.read().unwrap().clone() };
+                let total = pol.allowed_roots_canonical.len();
+                if total > 0 {
+                    use std::fmt::Write as _;
+                    let mut preview = String::new();
+                    for r in pol.allowed_roots_canonical.iter().take(3) {
+                        let _ = writeln!(&mut preview, "  - {}", r.display());
+                    }
+                    if total > 3 {
+                        let _ = writeln!(&mut preview, "  - ... and {} more", total - 3);
+                    }
+                    msg.push_str(&format!("\nAllowed roots ({} total):\n{}", total, preview));
+                }
                 let result = serde_json::json!({
-                    "content": [{"type": "text", "text": serde_json::to_string_pretty(&payload).unwrap_or_else(|_| payload.to_string())}],
+                    "content": [{"type": "text", "text": msg}],
                     "isError": false
                 });
                 self.auditor.log_success(ctx, SuccessDetails::default());
@@ -678,8 +833,20 @@ impl Server {
                         );
                     }
                 }
+                let resolved_path = tool_args.get("path").and_then(|v| v.as_str()).map(|s| {
+                    if is_path_absolute_like(s) {
+                        s.to_string()
+                    } else {
+                        let dc = self.default_cwd.read().unwrap();
+                        if let Some(base) = &*dc {
+                            base.join(s).to_string_lossy().to_string()
+                        } else {
+                            s.to_string()
+                        }
+                    }
+                });
                 let fs_params = serde_json::json!({
-                    "path": tool_args.get("path"),
+                    "path": resolved_path,
                     "encoding": tool_args.get("encoding").cloned().unwrap_or(serde_json::json!("utf8")),
                     "offset": tool_args.get("offset").cloned().unwrap_or(serde_json::Value::Null),
                     "length": tool_args.get("length").cloned().unwrap_or(serde_json::Value::Null),
@@ -746,8 +913,20 @@ impl Server {
                         );
                     }
                 }
+                let resolved_path = tool_args.get("path").and_then(|v| v.as_str()).map(|s| {
+                    if is_path_absolute_like(s) {
+                        s.to_string()
+                    } else {
+                        let dc = self.default_cwd.read().unwrap();
+                        if let Some(base) = &*dc {
+                            base.join(s).to_string_lossy().to_string()
+                        } else {
+                            s.to_string()
+                        }
+                    }
+                });
                 let fs_params = serde_json::json!({
-                    "path": tool_args.get("path"),
+                    "path": resolved_path,
                     "encoding": tool_args.get("encoding").cloned().unwrap_or(serde_json::json!("utf8")),
                     "line_offset": tool_args.get("line_offset").cloned().unwrap_or(serde_json::Value::Null),
                     "line_count": tool_args.get("line_count").cloned().unwrap_or(serde_json::Value::Null),
@@ -833,13 +1012,26 @@ impl Server {
                 } else {
                     serde_json::Value::Null
                 };
+                let resolved_path = tool_args.get("path").and_then(|v| v.as_str()).map(|s| {
+                    if is_path_absolute_like(s) {
+                        s.to_string()
+                    } else {
+                        let dc = self.default_cwd.read().unwrap();
+                        if let Some(base) = &*dc {
+                            base.join(s).to_string_lossy().to_string()
+                        } else {
+                            s.to_string()
+                        }
+                    }
+                });
                 let fs_params = serde_json::json!({
-                    "path": tool_args.get("path"),
+                    "path": resolved_path,
                     "data": tool_args.get("data"),
                     "encoding": tool_args.get("encoding").cloned().unwrap_or(serde_json::json!("utf8")),
                     "create": create,
                     "atomic": true,
-                    "mode": mode
+                    "mode": mode,
+                    "overwrite": overwrite
                 });
                 if !overwrite {
                     if let Some(p) = tool_args.get("path").and_then(|v| v.as_str()) {
@@ -920,8 +1112,18 @@ impl Server {
                         )),
                     );
                 }
+                let effective_path = if is_path_absolute_like(&path) {
+                    path.clone()
+                } else {
+                    let dc = self.default_cwd.read().unwrap();
+                    if let Some(base) = &*dc {
+                        base.join(&path).to_string_lossy().to_string()
+                    } else {
+                        path.clone()
+                    }
+                };
                 let policy = { self.policy.read().unwrap().clone() };
-                match crate::fs_safety::canonicalize_path(std::path::Path::new(&path)) {
+                match crate::fs_safety::canonicalize_path(std::path::Path::new(&effective_path)) {
                     Ok(canon) => {
                         if !policy
                             .allowed_roots_canonical
@@ -1004,8 +1206,18 @@ impl Server {
                         )),
                     );
                 }
+                let effective_path = if is_path_absolute_like(&path) {
+                    path.clone()
+                } else {
+                    let dc = self.default_cwd.read().unwrap();
+                    if let Some(base) = &*dc {
+                        base.join(&path).to_string_lossy().to_string()
+                    } else {
+                        path.clone()
+                    }
+                };
                 let policy = { self.policy.read().unwrap().clone() };
-                match crate::fs_safety::canonicalize_path(std::path::Path::new(&path)) {
+                match crate::fs_safety::canonicalize_path(std::path::Path::new(&effective_path)) {
                     Ok(canon) => {
                         if !policy
                             .allowed_roots_canonical
@@ -1258,7 +1470,7 @@ impl Server {
                 // Detailed policy format description (concise but informative)
                 let policy_format = r#"Policy v1 (YAML) fields:
 - version: number (required)
-- deny_network_fs: bool (default: false)
+- deny_network_fs: bool
 - allowed_roots: [string path, ...] (required)
 - write_rules: [{ path, recursive, max_file_bytes, create_if_missing }]
 - commands: [{
@@ -1270,6 +1482,10 @@ impl Server {
   }]
 - logging: { file: string?, redact: [string] }
 - limits: { max_read_bytes, max_cmd_concurrency }
+
+Notes:
+- mdmcpcfg installs a read-only core policy with deny_network_fs=true by default.
+- The effective deny_network_fs is core OR user; user policy cannot disable a core=true.
 "#;
                 let summary = format!(
                     "mdmcpsrvr v{}\nBuild: {}\nPolicy hash: {}\nAllowed roots: {}\nCommands: {}\n\nPolicy format:\n{}",
@@ -1439,7 +1655,7 @@ Claude Desktop Integration
   • Linux: `~/.config/Claude/claude_desktop_config.json`
 
 Using the MCP Tools
-- File I/O: `read_file`, `write_file` operate within allowed roots.
+- File I/O: `read_file`, `write_file` operate within allowed roots. Relative paths resolve against the session working directory if set.
 - Commands: `run_command` executes catalog entries from the policy.
 - Discoverability:
   • `list_accessible_directories` — shows allowed roots.
@@ -1882,7 +2098,7 @@ Notes
                                         .collect();
                                     truncated = true;
                                 }
-                                let cleaned = strip_ansi(&out);
+                                let cleaned = strip_ansi_fast(&out);
                                 let snippet = if truncated {
                                     format!("{}\n(truncated)", cleaned)
                                 } else {
@@ -2112,20 +2328,33 @@ Notes
                         ..Default::default()
                     }),
                 );
+                // Build legacy data then overlay minimal typed context
+                let mut data = self.build_error_data(
+                    "fs.read",
+                    &id,
+                    "policyDenied",
+                    serde_json::json!({
+                        "rule": "pathNotAllowed",
+                        "path": path,
+                        "detail": "Path outside allowed roots"
+                    }),
+                );
+                if let serde_json::Value::Object(ref mut obj) = data {
+                    obj.insert(
+                        "context".to_string(),
+                        self.minimal_error_context(
+                            "path_not_allowed",
+                            "The path is not within allowed directories",
+                            false,
+                            &["Use a path within allowed roots"],
+                        ),
+                    );
+                }
                 return create_error_response(
                     id.clone(),
                     McpErrorCode::PolicyDeny,
                     Some(format!("Path not allowed: {}", path)),
-                    Some(self.build_error_data(
-                        "fs.read",
-                        &id,
-                        "policyDenied",
-                        serde_json::json!({
-                            "rule": "pathNotAllowed",
-                            "path": path,
-                            "detail": "Path outside allowed roots"
-                        }),
-                    )),
+                    Some(data),
                 );
             }
             Err(FsError::NetworkFsDenied { path }) => {
@@ -2137,20 +2366,32 @@ Notes
                         ..Default::default()
                     }),
                 );
+                let mut data = self.build_error_data(
+                    "fs.read",
+                    &id,
+                    "policyDenied",
+                    serde_json::json!({
+                        "rule": "networkFsDenied",
+                        "path": path,
+                        "detail": "Network filesystem denied by policy"
+                    }),
+                );
+                if let serde_json::Value::Object(ref mut obj) = data {
+                    obj.insert(
+                        "context".to_string(),
+                        self.minimal_error_context(
+                            "network_fs_denied",
+                            "Network filesystem access is blocked by policy",
+                            false,
+                            &["Set deny_network_fs: false in policy if needed"],
+                        ),
+                    );
+                }
                 return create_error_response(
                     id.clone(),
                     McpErrorCode::PolicyDeny,
                     Some(format!("Network filesystem access blocked: {}. This policy blocks access to network-mounted filesystems (UNC paths, mapped network drives) for security reasons. To allow network filesystem access, set 'deny_network_fs: false' in your policy configuration.", path)),
-                    Some(self.build_error_data(
-                        "fs.read",
-                        &id,
-                        "policyDenied",
-                        serde_json::json!({
-                            "rule": "networkFsDenied",
-                            "path": path,
-                            "detail": "Network filesystem denied by policy"
-                        })
-                    )),
+                    Some(data),
                 );
             }
             Err(FsError::SpecialFile { path }) => {
@@ -2479,11 +2720,24 @@ Notes
         };
         // Create file writer with policy checks
         let policy = { self.policy.read().unwrap().clone() };
+        // Determine overwrite permission:
+        // - default to true
+        // - if append mode is requested, allow overwrite (modifies existing file)
+        // - otherwise honor explicit overwrite=false
+        let requested_mode = write_params
+            .mode
+            .as_deref()
+            .map(|s| s.to_ascii_lowercase())
+            .unwrap_or_else(|| "overwrite".to_string());
+        let mut allow_overwrite = write_params.overwrite.unwrap_or(true);
+        if requested_mode == "append" {
+            allow_overwrite = true;
+        }
         let writer = match GuardedFileWriter::create(
             &write_params.path,
             &policy,
             write_params.create,
-            true, // allow overwrite; mode decides final content
+            allow_overwrite,
         ) {
             Ok(writer) => writer,
             Err(FsError::PathNotAllowed { path }) => {
@@ -2545,6 +2799,29 @@ Notes
                         ..Default::default()
                     }),
                 );
+                let mut data = self.build_error_data(
+                    "fs.write",
+                    &id,
+                    "fileTooLarge",
+                    serde_json::json!({
+                        "rule": "fileTooLarge",
+                        "path": write_params.path,
+                        "sizeBytes": size,
+                        "limitBytes": limit,
+                        "detail": "File exceeds maximum size"
+                    }),
+                );
+                if let serde_json::Value::Object(ref mut obj) = data {
+                    obj.insert(
+                        "context".to_string(),
+                        self.minimal_error_context(
+                            "file_too_large",
+                            "File exceeds maximum allowed size",
+                            false,
+                            &["Reduce file size or adjust policy max_file_bytes"],
+                        ),
+                    );
+                }
                 return create_error_response(
                     id.clone(),
                     McpErrorCode::PolicyDeny,
@@ -2552,18 +2829,7 @@ Notes
                         "File too large: {} bytes exceeds limit {}",
                         size, limit
                     )),
-                    Some(self.build_error_data(
-                        "fs.write",
-                        &id,
-                        "fileTooLarge",
-                        serde_json::json!({
-                            "rule": "fileTooLarge",
-                            "path": write_params.path,
-                            "sizeBytes": size,
-                            "limitBytes": limit,
-                            "detail": "File exceeds maximum size"
-                        }),
-                    )),
+                    Some(data),
                 );
             }
             Err(e) => {
@@ -2663,6 +2929,48 @@ Notes
                     },
                 );
                 create_success_response(id, serde_json::to_value(result).unwrap())
+            }
+            Err(FsError::FileTooLarge { size, limit }) => {
+                self.auditor.log_denial(
+                    ctx,
+                    "fileTooLarge",
+                    Some(DenialDetails {
+                        path: Some(write_params.path.clone()),
+                        ..Default::default()
+                    }),
+                );
+                let mut data = self.build_error_data(
+                    "fs.write",
+                    &id,
+                    "fileTooLarge",
+                    serde_json::json!({
+                        "rule": "fileTooLarge",
+                        "path": write_params.path,
+                        "sizeBytes": size,
+                        "limitBytes": limit,
+                        "detail": "File exceeds maximum size"
+                    }),
+                );
+                if let serde_json::Value::Object(ref mut obj) = data {
+                    obj.insert(
+                        "context".to_string(),
+                        self.minimal_error_context(
+                            "file_too_large",
+                            "File exceeds maximum allowed size",
+                            false,
+                            &["Reduce file size or adjust policy max_file_bytes"],
+                        ),
+                    );
+                }
+                return create_error_response(
+                    id.clone(),
+                    McpErrorCode::PolicyDeny,
+                    Some(format!(
+                        "File too large: {} bytes exceeds limit {}",
+                        size, limit
+                    )),
+                    Some(data),
+                );
             }
             Err(e) => {
                 self.auditor.log_error(
@@ -2976,7 +3284,9 @@ mod tests {
         let compiled_policy = Arc::new(policy.compile().unwrap());
         Server::new(
             compiled_policy,
-            std::env::current_dir().unwrap().join("tests/test_policy.yaml"),
+            std::env::current_dir()
+                .unwrap()
+                .join("tests/test_policy.yaml"),
         )
         .await
         .unwrap()
@@ -3043,6 +3353,13 @@ mod tests {
         assert!(response.error.is_some());
         let error = response.error.unwrap();
         assert_eq!(error.code, McpErrorCode::PolicyDeny as i32);
+        // Validate minimal context is present and typed
+        let data = error.data.unwrap();
+        let ctx = &data["context"];
+        assert_eq!(ctx["schemaVersion"].as_i64().unwrap(), 1);
+        assert_eq!(ctx["type"].as_str().unwrap(), "path_not_allowed");
+        assert_eq!(ctx["retryable"].as_bool().unwrap(), false);
+        assert!(ctx["suggestions"].is_array());
     }
     #[tokio::test]
     async fn test_fs_write_success() {
@@ -3057,6 +3374,7 @@ mod tests {
             mode: Some("overwrite".to_string()),
             create: true,
             atomic: true,
+            overwrite: None,
         };
         let audit_ctx = AuditContext::new(
             "test".to_string(),
@@ -3121,7 +3439,7 @@ mod tests {
         let audit_ctx = AuditContext::new("test".into(), "tools/call".into(), "hash".into());
         let params = serde_json::json!({
             "name": "get_datetime",
-            "arguments": {"format": "iso8601"}
+            "arguments": {}
         });
         let resp = server
             .handle_tools_call(&audit_ctx, RpcId::Number(1), params)
@@ -3135,6 +3453,51 @@ mod tests {
         assert!(v.get("unix").and_then(|x| x.as_i64()).is_some());
         let comps = v.get("components").and_then(|c| c.as_object()).unwrap();
         assert!(comps.get("year").unwrap().as_i64().unwrap() >= 1970);
+    }
+
+    #[tokio::test]
+    async fn test_get_datetime_format_variants() {
+        let server = create_test_server().await;
+        let audit_ctx = AuditContext::new("test".into(), "tools/call".into(), "hash".into());
+
+        // iso8601
+        let iso = server
+            .handle_tools_call(
+                &audit_ctx,
+                RpcId::Number(1),
+                serde_json::json!({"name":"get_datetime","arguments":{"format":"iso8601"}}),
+            )
+            .await
+            .result
+            .unwrap();
+        let iso_txt = iso["content"][0]["text"].as_str().unwrap();
+        assert!(iso_txt.contains("T") && iso_txt.contains("+") || iso_txt.contains("Z"));
+
+        // unix
+        let unix = server
+            .handle_tools_call(
+                &audit_ctx,
+                RpcId::Number(2),
+                serde_json::json!({"name":"get_datetime","arguments":{"format":"unix"}}),
+            )
+            .await
+            .result
+            .unwrap();
+        let unix_txt = unix["content"][0]["text"].as_str().unwrap();
+        assert!(unix_txt.parse::<i64>().is_ok());
+
+        // human
+        let human = server
+            .handle_tools_call(
+                &audit_ctx,
+                RpcId::Number(3),
+                serde_json::json!({"name":"get_datetime","arguments":{"format":"human"}}),
+            )
+            .await
+            .result
+            .unwrap();
+        let human_txt = human["content"][0]["text"].as_str().unwrap();
+        assert!(human_txt.contains("UTC") || human_txt.contains("GMT"));
     }
     #[tokio::test]
     async fn test_working_directory_tools_and_next_command() {
@@ -3181,6 +3544,48 @@ mod tests {
             assert!(nc.is_none());
         }
     }
+
+    #[tokio::test]
+    async fn test_session_cwd_applies_to_file_tools() {
+        let server = create_test_server().await;
+        // Use allowed root as working directory
+        let root0 = { server.policy.read().unwrap().allowed_roots_canonical[0].clone() };
+        // Create a file inside the root
+        let rel_name = "rel_file.txt";
+        let abs_path = root0.join(rel_name);
+        std::fs::write(&abs_path, b"hello cwd").unwrap();
+
+        // Set session working directory
+        let audit_ctx = AuditContext::new("test".into(), "tools/call".into(), "hash".into());
+        let _set_resp = server
+            .handle_tools_call(
+                &audit_ctx,
+                RpcId::Number(1),
+                serde_json::json!({
+                    "name": "set_working_directory",
+                    "arguments": {"path": root0.to_string_lossy(), "scope": "session"}
+                }),
+            )
+            .await;
+
+        // Read the file using a relative path
+        let read_resp = server
+            .handle_tools_call(
+                &audit_ctx,
+                RpcId::Number(2),
+                serde_json::json!({
+                    "name": "read_bytes",
+                    "arguments": {"path": rel_name, "encoding": "utf8"}
+                }),
+            )
+            .await;
+        assert!(read_resp.error.is_none());
+        let content_text = read_resp.result.unwrap()["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(content_text, "hello cwd");
+    }
     #[test]
     fn test_generate_request_id() {
         assert_eq!(
@@ -3208,5 +3613,69 @@ mod tests {
         assert!(res.is_ok());
         // Catalog should rebuild without error when fetching read lock
         let _guard = server.command_catalog.read().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_minimal_error_context_helper() {
+        let server = create_test_server().await;
+        // Long strings to trigger truncation logic
+        let long_msg = "x".repeat(400);
+        let long_sugg = "y".repeat(400);
+        let ctx = server.minimal_error_context(
+            "sample_type",
+            &long_msg,
+            true,
+            &["s1", &long_sugg, "s3", "s4", "s5"],
+        );
+        assert_eq!(ctx["schemaVersion"].as_i64().unwrap(), 1);
+        assert_eq!(ctx["type"].as_str().unwrap(), "sample_type");
+        assert_eq!(ctx["retryable"].as_bool().unwrap(), true);
+        // userMessage truncated to <= 259 bytes (256 + UTF-8 ellipsis)
+        let um = ctx["userMessage"].as_str().unwrap();
+        assert!(um.len() <= 259);
+        // suggestions capped to 3 and each truncated
+        let suggs = ctx["suggestions"].as_array().unwrap();
+        assert_eq!(suggs.len(), 3);
+        assert!(suggs[1].as_str().unwrap().len() <= 259);
+    }
+
+    #[tokio::test]
+    async fn test_fs_write_file_too_large_context() {
+        let server = create_test_server().await;
+        let root0 = { server.policy.read().unwrap().allowed_roots_canonical[0].clone() };
+        let test_file = root0.join("too_large.txt");
+        // Build data larger than the 1000-byte limit used in tests
+        let big = "a".repeat(2000);
+        let params = FsWriteParams {
+            path: test_file.to_string_lossy().to_string(),
+            data: big,
+            encoding: "utf8".to_string(),
+            offset: None,
+            mode: Some("overwrite".to_string()),
+            create: true,
+            atomic: true,
+            overwrite: None,
+        };
+        let audit_ctx = AuditContext::new(
+            "test".to_string(),
+            "fs.write".to_string(),
+            "hash".to_string(),
+        );
+        let response = server
+            .handle_fs_write(
+                &audit_ctx,
+                RpcId::Number(1),
+                serde_json::to_value(params).unwrap(),
+            )
+            .await;
+        assert!(response.result.is_none());
+        let err = response.error.unwrap();
+        // We may get PolicyDeny (from our mapping) or IoError depending on platform specifics,
+        // but for FileTooLarge mapping we expect PolicyDeny path.
+        assert_eq!(err.code, McpErrorCode::PolicyDeny as i32);
+        let data = err.data.unwrap();
+        let ctxv = &data["context"];
+        assert_eq!(ctxv["type"].as_str().unwrap(), "file_too_large");
+        assert!(ctxv["suggestions"].is_array());
     }
 }

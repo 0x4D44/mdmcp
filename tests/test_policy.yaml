@@ -9,16 +9,6 @@ write_rules:
     max_file_bytes: 1000000
     create_if_missing: true
 commands:
-  - id: "echo"
-    exec: "C:\\Windows\\System32\\cmd.exe"
-    args:
-      fixed: ["/C", "echo"]
-    cwd_policy: "within_root"
-    env_allowlist: []
-    timeout_ms: 5000
-    max_output_bytes: 10000
-    platform: ["windows"]
-    allow_any_args: true
   - id: "dir"
     exec: "C:\\Windows\\System32\\cmd.exe"
     args:

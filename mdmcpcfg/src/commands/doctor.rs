@@ -62,24 +62,44 @@ async fn check_installation(issues: &mut Vec<String>, _warnings: &mut [String]) 
     let paths = Paths::new()?;
     let binary_path = paths.server_binary();
 
-    // Check if binary exists
-    if !binary_path.exists() {
-        issues.push(format!(
-            "MCP server binary not found: {}",
-            binary_path.display()
-        ));
-        println!("   ❌ Binary not found: {}", binary_path.display());
-        return Ok(());
-    }
-
-    // Check if binary is executable
-    if !is_executable(&binary_path) {
-        issues.push(format!(
-            "MCP server binary is not executable: {}",
-            binary_path.display()
-        ));
-        println!("   ❌ Binary not executable: {}", binary_path.display());
-        return Ok(());
+    // Single-shot metadata check to reduce TOCTOU window
+    match std::fs::symlink_metadata(&binary_path) {
+        Err(_) => {
+            issues.push(format!(
+                "MCP server binary not found: {}",
+                binary_path.display()
+            ));
+            println!("   ❌ Binary not found: {}", binary_path.display());
+            return Ok(());
+        }
+        Ok(md) => {
+            let is_file = md.file_type().is_file();
+            let exec = if cfg!(target_os = "windows") {
+                binary_path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| e.eq_ignore_ascii_case("exe"))
+                    .unwrap_or(false)
+            } else {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    md.permissions().mode() & 0o111 != 0
+                }
+                #[cfg(not(unix))]
+                {
+                    true
+                }
+            };
+            if !is_file || !exec {
+                issues.push(format!(
+                    "MCP server binary is not executable: {}",
+                    binary_path.display()
+                ));
+                println!("   ❌ Binary not executable: {}", binary_path.display());
+                return Ok(());
+            }
+        }
     }
 
     println!(

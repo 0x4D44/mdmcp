@@ -1,0 +1,99 @@
+# Example mdaicli configuration file
+# Location: 
+#   - Windows: %APPDATA%\mdaicli\config.toml
+#   - macOS: ~/Library/Application Support/mdaicli/config.toml
+#   - Linux: ~/.config/mdaicli/config.toml
+
+# Default settings
+[default]
+provider = "openai"
+format = "json"
+timeout = 120
+
+# Default models per provider
+[default.models]
+openai = "gpt-4"
+anthropic = "claude-3-opus-20240229"
+openrouter = "auto"
+
+# Profiles for different use cases
+[profiles.development]
+provider = "openai"
+model = "gpt-3.5-turbo"
+temperature = 0.7
+max_tokens = 2000
+format = "text"
+
+[profiles.production]
+provider = "openai"
+model = "gpt-4-turbo"
+temperature = 0.3
+max_tokens = 4000
+format = "json"
+
+[profiles.code-review]
+provider = "anthropic"
+model = "claude-3-opus-20240229"
+temperature = 0.2
+max_tokens = 8000
+system_prompt = "You are an expert code reviewer. Focus on security, performance, and maintainability."
+
+# Cache configuration
+[cache]
+enabled = true
+ttl_seconds = 3600
+max_size_mb = 500
+directory = "~/.cache/mdaicli"
+
+# Rate limiting per provider
+[limits.openai]
+requests_per_minute = 60
+tokens_per_minute = 90000
+max_retries = 3
+backoff_base_ms = 1000
+backoff_max_ms = 60000
+
+[limits.anthropic]
+requests_per_minute = 50
+tokens_per_minute = 100000
+max_retries = 3
+backoff_base_ms = 1000
+backoff_max_ms = 60000
+
+[limits.openrouter]
+requests_per_minute = 100
+tokens_per_minute = 150000
+max_retries = 5
+backoff_base_ms = 500
+backoff_max_ms = 30000
+
+# Logging configuration
+[logging]
+level = "info"  # debug, info, warn, error
+directory = "~/.local/share/mdaicli/logs"  # %LOCALAPPDATA%\mdaicli\logs on Windows
+max_files = 10
+max_size_mb = 50
+redact_sensitive = true
+include_timestamps = true
+
+# Account aliases (optional)
+[accounts.openai]
+default = "personal"
+aliases = ["personal", "work", "project-x"]
+
+[accounts.anthropic]
+default = "main"
+aliases = ["main", "research"]
+
+# Custom endpoints (optional)
+[endpoints]
+# For self-hosted or proxy endpoints
+# openai = "https://api.company.com/v1"
+# anthropic = "https://claude-proxy.company.com/v1"
+
+# Feature flags (optional)
+[features]
+auto_retry = true
+cost_warnings = true
+usage_tracking = true
+update_check = true

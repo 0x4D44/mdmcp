@@ -1,0 +1,111 @@
+{
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "get_current_weather",
+        "description": "Get the current weather in a given location",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "location": {
+              "type": "string",
+              "description": "The city and state, e.g. San Francisco, CA"
+            },
+            "unit": {
+              "type": "string",
+              "enum": ["celsius", "fahrenheit"],
+              "description": "The unit of temperature",
+              "default": "fahrenheit"
+            }
+          },
+          "required": ["location"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "search_documentation",
+        "description": "Search technical documentation for a specific topic",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string",
+              "description": "The search query"
+            },
+            "category": {
+              "type": "string",
+              "enum": ["api", "guide", "tutorial", "reference"],
+              "description": "Type of documentation to search"
+            },
+            "limit": {
+              "type": "integer",
+              "description": "Maximum number of results to return",
+              "default": 5,
+              "minimum": 1,
+              "maximum": 20
+            }
+          },
+          "required": ["query"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "execute_calculation",
+        "description": "Perform mathematical calculations",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "expression": {
+              "type": "string",
+              "description": "Mathematical expression to evaluate"
+            },
+            "precision": {
+              "type": "integer",
+              "description": "Number of decimal places in the result",
+              "default": 2,
+              "minimum": 0,
+              "maximum": 10
+            }
+          },
+          "required": ["expression"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "analyze_code",
+        "description": "Analyze code for issues, complexity, or patterns",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "description": "The code to analyze"
+            },
+            "language": {
+              "type": "string",
+              "enum": ["python", "javascript", "typescript", "rust", "go", "java", "cpp"],
+              "description": "Programming language of the code"
+            },
+            "analysis_type": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": ["bugs", "security", "performance", "style", "complexity"]
+              },
+              "description": "Types of analysis to perform"
+            }
+          },
+          "required": ["code", "language"]
+        }
+      }
+    }
+  ],
+  "tool_choice": "auto"
+}

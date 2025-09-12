@@ -352,8 +352,21 @@ pub fn write_file<P: AsRef<Path>>(path: P, content: &str) -> Result<()> {
         fs::create_dir_all(parent)
             .with_context(|| format!("Failed to create directory: {}", parent.display()))?;
     }
-
-    fs::write(path, content).with_context(|| format!("Failed to write file: {}", path.display()))
+    // Atomic write: write to a temp file in the same directory, then rename
+    let parent = path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::env::temp_dir());
+    let mut tmp = tempfile::NamedTempFile::new_in(&parent)
+        .with_context(|| format!("Failed to create temp file in {}", parent.display()))?;
+    use std::io::Write as _;
+    tmp.write_all(content.as_bytes())
+        .with_context(|| format!("Failed to write temp file for {}", path.display()))?;
+    tmp.flush()
+        .with_context(|| format!("Failed to flush temp file for {}", path.display()))?;
+    tmp.persist(path)
+        .map_err(|e| anyhow::anyhow!("Failed to persist {}: {}", path.display(), e))?;
+    Ok(())
 }
 
 /// Check if a file exists and is executable

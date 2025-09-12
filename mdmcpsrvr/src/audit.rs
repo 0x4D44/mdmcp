@@ -218,6 +218,8 @@ impl Auditor {
                 debug!("Audit: {}", json);
 
                 if let Ok(mut writer_guard) = self.writer.lock() {
+                    // Rotate if needed before writing
+                    self.maybe_rotate(&mut writer_guard);
                     if let Some(ref mut writer) = *writer_guard {
                         if let Err(e) = writeln!(writer, "{}", json) {
                             error!("Failed to write audit log: {}", e);
@@ -232,6 +234,35 @@ impl Auditor {
             Err(e) => {
                 error!("Failed to serialize audit entry: {}", e);
             }
+        }
+    }
+
+    fn maybe_rotate(&self, writer_guard: &mut Option<std::fs::File>) {
+        const MAX_BYTES: u64 = 10 * 1024 * 1024; // 10 MB
+        let Some(ref log_path) = self.config.log_file else { return };
+        let Some(ref mut writer) = writer_guard else { return };
+        if let Ok(meta) = writer.metadata() {
+            if meta.len() < MAX_BYTES { return; }
+        }
+        // Close current writer
+        *writer_guard = None;
+        // Rotate existing file to timestamped backup
+        let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+        let backup = log_path.clone();
+        let ext = backup
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("log");
+        let stem = backup
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("audit");
+        let rotated_name = format!("{}.{}.{}", stem, ts, ext);
+        let rotated_path = backup.with_file_name(rotated_name);
+        let _ = std::fs::rename(log_path, &rotated_path);
+        // Reopen new file
+        if let Ok(new_file) = OpenOptions::new().create(true).append(true).open(log_path) {
+            *writer_guard = Some(new_file);
         }
     }
 }

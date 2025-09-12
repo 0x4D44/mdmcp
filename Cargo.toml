@@ -4,6 +4,7 @@ members = [
   "mdmcpcfg",
   "crates/mdmcp_policy",
   "crates/mdmcp_common",
+  "mdaicli",
 ]
 resolver = "2"
 

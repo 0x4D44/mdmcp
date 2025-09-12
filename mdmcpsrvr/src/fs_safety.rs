@@ -42,6 +42,14 @@ impl GuardedFileReader {
     /// Open file for reading with policy checks
     pub fn open<P: AsRef<Path>>(path: P, policy: &CompiledPolicy) -> Result<Self, FsError> {
         let path = path.as_ref();
+        // Disallow reading through symlinks to avoid escape via TOCTOU/symlink swaps
+        if let Ok(meta) = std::fs::symlink_metadata(path) {
+            if meta.file_type().is_symlink() {
+                return Err(FsError::SpecialFile {
+                    path: format!("{} (symlink not permitted)", path.display()),
+                });
+            }
+        }
         let canonical = canonicalize_path(path).map_err(|_| FsError::PathNotAllowed {
             path: path.display().to_string(),
         })?;
@@ -141,6 +149,14 @@ impl GuardedFileWriter {
         overwrite: bool,
     ) -> Result<Self, FsError> {
         let path = path.as_ref();
+        // If target exists and is a symlink, refuse to write
+        if let Ok(meta) = std::fs::symlink_metadata(path) {
+            if meta.file_type().is_symlink() {
+                return Err(FsError::SpecialFile {
+                    path: format!("{} (symlink not permitted)", path.display()),
+                });
+            }
+        }
         let canonical = canonicalize_path_for_write(path, create)?;
 
         // Path allowance will be checked via write rules below

@@ -17,7 +17,12 @@
       "Bash(cat:*)",
       "Bash(awk:*)",
       "Bash(mkdir:*)",
-      "Bash(mv:*)"
+      "Bash(mv:*)",
+      "WebFetch(domain:platform.openai.com)",
+      "WebSearch",
+      "Bash(tree:*)",
+      "Bash(dir:*)",
+      "Read(//c/**)"
     ],
     "deny": [],
     "ask": []

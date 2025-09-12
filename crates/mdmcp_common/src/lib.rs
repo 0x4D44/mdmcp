@@ -153,6 +153,8 @@ pub struct FsWriteParams {
     pub create: bool,
     #[serde(default)]
     pub atomic: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overwrite: Option<bool>,
 }
 
 /// Result of fs.write method (enhanced)

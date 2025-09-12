@@ -1,0 +1,52 @@
+messages:
+  - role: system
+    content: |
+      You are a helpful AI assistant with expertise in software development.
+      You provide clear, concise, and accurate responses.
+      
+  - role: user
+    content: |
+      I'm working on a web application and need help with authentication.
+      What are the best practices for implementing secure user authentication in 2024?
+      
+  - role: assistant
+    content: |
+      Here are the key best practices for secure authentication in 2024:
+      
+      1. **Use Strong Password Policies**
+         - Minimum 12 characters
+         - Require complexity without predictable patterns
+         - Check against compromised password databases
+      
+      2. **Implement Multi-Factor Authentication (MFA)**
+         - TOTP/HOTP authenticators preferred
+         - WebAuthn/FIDO2 for passwordless options
+         - SMS only as fallback (not primary)
+      
+      3. **Secure Password Storage**
+         - Use Argon2id, scrypt, or bcrypt
+         - Never store plain text or reversible encryption
+         - Use appropriate work factors
+      
+      4. **Session Management**
+         - Generate cryptographically secure session tokens
+         - Implement proper session expiration
+         - Use secure, httpOnly, sameSite cookies
+      
+      5. **Rate Limiting and Brute Force Protection**
+         - Implement exponential backoff
+         - Use CAPTCHA after failed attempts
+         - Consider account lockouts with recovery
+      
+      Would you like me to elaborate on any of these points or discuss implementation details for a specific framework?
+      
+  - role: user
+    content: "Yes, can you show me a code example of implementing Argon2id password hashing in Node.js?"
+
+metadata:
+  conversation_id: auth-discussion-001
+  created_at: "2024-01-15T10:00:00Z"
+  tags:
+    - authentication
+    - security
+    - web-development
