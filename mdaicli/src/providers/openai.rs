@@ -300,11 +300,7 @@ pub fn run_query(cfg: &Config, account: &str, q: &Query) -> Result<(), AppError>
 pub fn list_models(_cfg: &Config, refresh: bool) -> Result<(), AppError> {
     // If refresh, call OpenAI /v1/models, else print a minimal list
     if refresh {
-        let api_key = if let Ok(k) = crate::credentials::retrieve_secret("openai", "default") {
-            Some(k)
-        } else {
-            None
-        };
+        let api_key = crate::credentials::retrieve_secret("openai", "default").ok();
         let base_url = io::get_cred_meta("openai", "default")
             .and_then(|m| m.base_url)
             .unwrap_or_else(|| "https://api.openai.com/v1".into());

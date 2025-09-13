@@ -410,6 +410,7 @@ async fn update_from_github(
 }
 
 /// Hook-based variant for testing: callers inject release fetch + download functions
+#[allow(clippy::too_many_arguments)]
 async fn update_from_github_with_hooks<Fetch, FutF, Download, FutD>(
     fetch_release: Fetch,
     download: Download,

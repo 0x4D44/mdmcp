@@ -129,13 +129,10 @@ impl Config {
         };
         let mut cfg = if path.exists() {
             let s = fs::read_to_string(&path)?;
-            let mut c: Config = toml::from_str(&s)?;
-            c.config_path = Some(path);
-            c
+            let c: Config = toml::from_str(&s)?;
+            Config { config_path: Some(path), ..c }
         } else {
-            let mut c = Config::default();
-            c.config_path = Some(path);
-            c
+            Config { config_path: Some(path), ..Config::default() }
         };
 
         // Apply profile section

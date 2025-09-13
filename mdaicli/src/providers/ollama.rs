@@ -353,18 +353,16 @@ pub fn models_pull(_cfg: &Config, account: &str, name: &str) -> Result<(), AppEr
         ));
     }
     let reader = std::io::BufReader::new(resp);
-    for line in reader.lines() {
-        if let Ok(l) = line {
-            if l.trim().is_empty() {
-                continue;
+    for l in reader.lines().flatten() {
+        if l.trim().is_empty() {
+            continue;
+        }
+        if let Ok(j) = serde_json::from_str::<serde_json::Value>(&l) {
+            if let Some(status) = j.get("status").and_then(|v| v.as_str()) {
+                println!("{}", status);
             }
-            if let Ok(j) = serde_json::from_str::<serde_json::Value>(&l) {
-                if let Some(status) = j.get("status").and_then(|v| v.as_str()) {
-                    println!("{}", status);
-                }
-                if j.get("done").and_then(|v| v.as_bool()).unwrap_or(false) {
-                    break;
-                }
+            if j.get("done").and_then(|v| v.as_bool()).unwrap_or(false) {
+                break;
             }
         }
     }

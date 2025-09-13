@@ -356,7 +356,7 @@ pub fn write_file<P: AsRef<Path>>(path: P, content: &str) -> Result<()> {
     let parent = path
         .parent()
         .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| std::env::temp_dir());
+        .unwrap_or_else(std::env::temp_dir);
     let mut tmp = tempfile::NamedTempFile::new_in(&parent)
         .with_context(|| format!("Failed to create temp file in {}", parent.display()))?;
     use std::io::Write as _;
