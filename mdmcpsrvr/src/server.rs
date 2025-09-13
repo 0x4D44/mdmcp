@@ -2646,6 +2646,7 @@ Notes
         }
     }
     /// Handle fs.write request
+    #[allow(clippy::needless_return)]
     async fn handle_fs_write(&self, ctx: &AuditContext, id: RpcId, params: Value) -> RpcResponse {
         let write_params: FsWriteParams = match serde_json::from_value(params) {
             Ok(p) => p,
@@ -3358,7 +3359,7 @@ mod tests {
         let ctx = &data["context"];
         assert_eq!(ctx["schemaVersion"].as_i64().unwrap(), 1);
         assert_eq!(ctx["type"].as_str().unwrap(), "path_not_allowed");
-        assert_eq!(ctx["retryable"].as_bool().unwrap(), false);
+        assert!(!ctx["retryable"].as_bool().unwrap());
         assert!(ctx["suggestions"].is_array());
     }
     #[tokio::test]
@@ -3629,7 +3630,7 @@ mod tests {
         );
         assert_eq!(ctx["schemaVersion"].as_i64().unwrap(), 1);
         assert_eq!(ctx["type"].as_str().unwrap(), "sample_type");
-        assert_eq!(ctx["retryable"].as_bool().unwrap(), true);
+        assert!(ctx["retryable"].as_bool().unwrap());
         // userMessage truncated to <= 259 bytes (256 + UTF-8 ellipsis)
         let um = ctx["userMessage"].as_str().unwrap();
         assert!(um.len() <= 259);

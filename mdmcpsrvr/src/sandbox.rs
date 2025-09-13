@@ -143,8 +143,7 @@ pub async fn execute_command(config: ExecutionConfig) -> Result<ExecutionResult,
     // Handle stdin
     if !config.stdin.is_empty() {
         if let Some(mut stdin) = child.stdin.take() {
-            use std::cmp;
-            let write_dur = cmp::max(200, cmp::min((config.timeout_ms / 4) as usize, 5_000));
+            let write_dur = ((config.timeout_ms / 4) as usize).clamp(200, 5_000);
             match tokio::time::timeout(
                 std::time::Duration::from_millis(write_dur as u64),
                 stdin.write_all(config.stdin.as_bytes()),
