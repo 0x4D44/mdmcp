@@ -1,11 +1,17 @@
 use mdaicli::{audit, cache, config, errors, io, model, opts, providers};
 
+mod helptext;
 use clap::Parser;
 use errors::{exit_with, ErrorKind};
 use opts::{Cli, Commands, ListType, RemoveType};
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        println!("{}", helptext::FULL_HELP);
+        return ExitCode::SUCCESS;
+    }
     let cli = Cli::parse();
 
     if let Err(e) = real_main(cli) {

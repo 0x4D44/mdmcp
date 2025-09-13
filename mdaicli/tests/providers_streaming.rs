@@ -40,7 +40,22 @@ fn openai_streaming_json() {
     cfg.default.provider = "openai".into();
     cfg.default.models.insert("openai".into(), "gpt-4".into());
 
-    let q = Query { model: Some("gpt-4".into()), system: None, user: Some("hi".into()), messages_file: None, input_files: vec![], input_role: "user".into(), temperature: None, top_p: None, max_tokens: None, stream: true, format: "json".into(), timeout: Some(5), tools_file: None, output: None };
+    let q = Query {
+        model: Some("gpt-4".into()),
+        system: None,
+        user: Some("hi".into()),
+        messages_file: None,
+        input_files: vec![],
+        input_role: "user".into(),
+        temperature: None,
+        top_p: None,
+        max_tokens: None,
+        stream: true,
+        format: "json".into(),
+        timeout: Some(5),
+        tools_file: None,
+        output: None,
+    };
     let res = providers::run_query(&cfg, "default", &q);
     ep.assert();
     assert!(res.is_ok());
@@ -73,9 +88,26 @@ fn anthropic_streaming_json() {
 
     let mut cfg = base_cfg(&td);
     cfg.default.provider = "anthropic".into();
-    cfg.default.models.insert("anthropic".into(), "claude-3-opus-20240229".into());
+    cfg.default
+        .models
+        .insert("anthropic".into(), "claude-3-opus-20240229".into());
 
-    let q = Query { model: Some("claude-3-opus-20240229".into()), system: None, user: Some("hi".into()), messages_file: None, input_files: vec![], input_role: "user".into(), temperature: None, top_p: None, max_tokens: None, stream: true, format: "json".into(), timeout: Some(5), tools_file: None, output: None };
+    let q = Query {
+        model: Some("claude-3-opus-20240229".into()),
+        system: None,
+        user: Some("hi".into()),
+        messages_file: None,
+        input_files: vec![],
+        input_role: "user".into(),
+        temperature: None,
+        top_p: None,
+        max_tokens: None,
+        stream: true,
+        format: "json".into(),
+        timeout: Some(5),
+        tools_file: None,
+        output: None,
+    };
     let res = providers::run_query(&cfg, "default", &q);
     ep.assert();
     assert!(res.is_ok());
@@ -105,11 +137,27 @@ fn openrouter_streaming_json() {
 
     let mut cfg = base_cfg(&td);
     cfg.default.provider = "openrouter".into();
-    cfg.default.models.insert("openrouter".into(), "auto".into());
+    cfg.default
+        .models
+        .insert("openrouter".into(), "auto".into());
 
-    let q = Query { model: Some("auto".into()), system: None, user: Some("hi".into()), messages_file: None, input_files: vec![], input_role: "user".into(), temperature: None, top_p: None, max_tokens: None, stream: true, format: "json".into(), timeout: Some(5), tools_file: None, output: None };
+    let q = Query {
+        model: Some("auto".into()),
+        system: None,
+        user: Some("hi".into()),
+        messages_file: None,
+        input_files: vec![],
+        input_role: "user".into(),
+        temperature: None,
+        top_p: None,
+        max_tokens: None,
+        stream: true,
+        format: "json".into(),
+        timeout: Some(5),
+        tools_file: None,
+        output: None,
+    };
     let res = providers::run_query(&cfg, "default", &q);
     ep.assert();
     assert!(res.is_ok());
 }
-

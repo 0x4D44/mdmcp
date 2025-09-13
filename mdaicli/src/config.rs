@@ -380,7 +380,10 @@ mod tests {
         std::env::set_var("MDAICLI_NO_CACHE", "1");
         c.apply_env_overrides();
         assert_eq!(c.default.provider, "anthropic");
-        assert_eq!(c.default.models.get("anthropic").unwrap(), "claude-3-opus-20240229");
+        assert_eq!(
+            c.default.models.get("anthropic").unwrap(),
+            "claude-3-opus-20240229"
+        );
         assert!(!c.cache.enabled);
         std::env::remove_var("MDAICLI_PROVIDER");
         std::env::remove_var("MDAICLI_MODEL");

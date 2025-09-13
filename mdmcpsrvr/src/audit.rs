@@ -239,20 +239,26 @@ impl Auditor {
 
     fn maybe_rotate(&self, writer_guard: &mut Option<std::fs::File>) {
         const MAX_BYTES: u64 = 10 * 1024 * 1024; // 10 MB
-        let Some(ref log_path) = self.config.log_file else { return };
-        let Some(ref mut writer) = writer_guard else { return };
+        let Some(ref log_path) = self.config.log_file else {
+            return;
+        };
+        let Some(ref mut writer) = writer_guard else {
+            return;
+        };
         if let Ok(meta) = writer.metadata() {
-            if meta.len() < MAX_BYTES { return; }
+            if meta.len() < MAX_BYTES {
+                return;
+            }
         }
         // Close current writer
         *writer_guard = None;
         // Rotate existing file to timestamped backup
-        let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
         let backup = log_path.clone();
-        let ext = backup
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("log");
+        let ext = backup.extension().and_then(|e| e.to_str()).unwrap_or("log");
         let stem = backup
             .file_stem()
             .and_then(|s| s.to_str())

@@ -23,7 +23,10 @@ pub fn append(cfg: &Config, json: &serde_json::Value) -> Result<(), AppError> {
     }
     let mut line = serde_json::to_string(json).unwrap_or_default();
     line.push('\n');
-    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(p)?;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(p)?;
     file.write_all(line.as_bytes())?;
     Ok(())
 }

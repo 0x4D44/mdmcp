@@ -25,12 +25,12 @@ use mdmcp_common::{
     ServerInfo,
 };
 use mdmcp_policy::{CompiledPolicy, Policy};
+use once_cell::sync::Lazy;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use tracing::{debug, error, info};
-use once_cell::sync::Lazy;
 
 static ANSI_RE_FAST: Lazy<regex::Regex> = Lazy::new(|| {
     // Explicit ESC byte avoids portability issues in patches

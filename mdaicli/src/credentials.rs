@@ -36,8 +36,12 @@ pub fn store_secret(
 pub fn retrieve_secret(provider: &str, account: &str) -> Result<String, AppError> {
     // Test override for integration tests
     let env_key = format!("MDAICLI_TEST_SECRET_{}", provider.to_uppercase());
-    if let Ok(v) = std::env::var(env_key) { return Ok(v); }
-    if let Ok(v) = std::env::var("MDAICLI_TEST_SECRET") { return Ok(v); }
+    if let Ok(v) = std::env::var(env_key) {
+        return Ok(v);
+    }
+    if let Ok(v) = std::env::var("MDAICLI_TEST_SECRET") {
+        return Ok(v);
+    }
     if let Ok(s) = get_keyring(provider, account) {
         return Ok(s);
     }

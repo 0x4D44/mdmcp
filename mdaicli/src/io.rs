@@ -77,7 +77,9 @@ fn is_within(path: &Path, root: &Path) -> bool {
     path.starts_with(root)
 }
 
-fn canonicalize_if_exists(p: &Path) -> Option<PathBuf> { std::fs::canonicalize(p).ok() }
+fn canonicalize_if_exists(p: &Path) -> Option<PathBuf> {
+    std::fs::canonicalize(p).ok()
+}
 
 pub fn read_secret_from_stdin_or_tty(no_interactive: bool) -> Result<String, AppError> {
     // If stdin is piped, read it

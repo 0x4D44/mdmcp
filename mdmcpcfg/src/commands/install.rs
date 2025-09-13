@@ -1950,7 +1950,11 @@ mod tests {
         let good_hash = calculate_sha256(tmp.path()).unwrap();
         // Tamper
         std::fs::write(tmp.path(), b"modified").unwrap();
-        let ver = BinaryVerification { sha256: good_hash, signature: None, signed_by: None };
+        let ver = BinaryVerification {
+            sha256: good_hash,
+            signature: None,
+            signed_by: None,
+        };
         let res = verify_binary(tmp.path(), &ver);
         assert!(res.is_err());
     }
@@ -2148,11 +2152,16 @@ pub struct BinaryVerification {
 }
 
 /// Verify binary integrity and optional signature
+#[cfg(test)]
 pub fn verify_binary(path: &Path, verification: &BinaryVerification) -> Result<()> {
     let actual = calculate_sha256(path)
         .with_context(|| format!("Failed to calculate SHA256 for {}", path.display()))?;
     if actual != verification.sha256 {
-        bail!("Binary checksum mismatch: expected {}, got {}", verification.sha256, actual);
+        bail!(
+            "Binary checksum mismatch: expected {}, got {}",
+            verification.sha256,
+            actual
+        );
     }
     // Placeholder: Optional signature verification hook (e.g., minisign or GPG)
     if let (Some(sig), Some(signer)) = (&verification.signature, &verification.signed_by) {
