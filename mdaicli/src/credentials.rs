@@ -221,41 +221,7 @@ fn derive_key(kdf: &KdfParams, pass: &str) -> Result<[u8; 32], AppError> {
     Ok(out)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn argon2_derivation_is_deterministic() {
-        let kdf = KdfParams {
-            alg: "argon2id".into(),
-            mem_kib: 65536,
-            iterations: 3,
-            parallelism: 4,
-            salt_b64: base64::engine::general_purpose::STANDARD.encode([7u8; 32]),
-        };
-        let k1 = derive_key(&kdf, "passphrase").unwrap();
-        let k2 = derive_key(&kdf, "passphrase").unwrap();
-        assert_eq!(k1, k2);
-        let k3 = derive_key(&kdf, "other").unwrap();
-        assert_ne!(k1, k3);
-    }
-
-    #[test]
-    fn aes_gcm_roundtrip_and_tamper_detect() {
-        let key = [9u8; 32];
-        let cipher = Aes256Gcm::new(GenericArray::from_slice(&key));
-        let nonce = [1u8; 12];
-        let nonce_ga = GenericArray::from_slice(&nonce);
-        let ct = cipher.encrypt(nonce_ga, b"secret".as_ref()).unwrap();
-        let pt = cipher.decrypt(nonce_ga, ct.as_ref()).unwrap();
-        assert_eq!(pt, b"secret");
-        // Tamper
-        let mut bad = ct.clone();
-        bad[0] ^= 0xFF;
-        assert!(cipher.decrypt(nonce_ga, bad.as_ref()).is_err());
-    }
-}
+// tests moved to bottom to avoid items-after-test-module lint
 
 fn store_fallback(provider: &str, account: &str, secret: &str) -> Result<(), AppError> {
     let mut cf = load_or_init_file()?;
@@ -323,4 +289,40 @@ fn remove_fallback(provider: &str, account: &str) -> Result<(), AppError> {
     let entry_key = format!("{}:{}", provider, account);
     cf.entries.remove(&entry_key);
     save_file(&cf)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn argon2_derivation_is_deterministic() {
+        let kdf = KdfParams {
+            alg: "argon2id".into(),
+            mem_kib: 65536,
+            iterations: 3,
+            parallelism: 4,
+            salt_b64: base64::engine::general_purpose::STANDARD.encode([7u8; 32]),
+        };
+        let k1 = derive_key(&kdf, "passphrase").unwrap();
+        let k2 = derive_key(&kdf, "passphrase").unwrap();
+        assert_eq!(k1, k2);
+        let k3 = derive_key(&kdf, "other").unwrap();
+        assert_ne!(k1, k3);
+    }
+
+    #[test]
+    fn aes_gcm_roundtrip_and_tamper_detect() {
+        let key = [9u8; 32];
+        let cipher = Aes256Gcm::new(GenericArray::from_slice(&key));
+        let nonce = [1u8; 12];
+        let nonce_ga = GenericArray::from_slice(&nonce);
+        let ct = cipher.encrypt(nonce_ga, b"secret".as_ref()).unwrap();
+        let pt = cipher.decrypt(nonce_ga, ct.as_ref()).unwrap();
+        assert_eq!(pt, b"secret");
+        // Tamper
+        let mut bad = ct.clone();
+        bad[0] ^= 0xFF;
+        assert!(cipher.decrypt(nonce_ga, bad.as_ref()).is_err());
+    }
 }

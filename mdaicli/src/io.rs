@@ -308,8 +308,10 @@ mod tests {
         let fpath = dir.path().join("x.txt");
         std::fs::write(&fpath, "hi").unwrap();
 
-        let mut cfg = crate::config::Config::default();
-        cfg.allowed_roots = vec![dir.path().to_path_buf()];
+        let cfg = crate::config::Config {
+            allowed_roots: vec![dir.path().to_path_buf()],
+            ..Default::default()
+        };
         enforce_allowed_roots(&cfg, &[fpath.to_string_lossy().to_string()]).unwrap();
     }
 
@@ -319,8 +321,10 @@ mod tests {
         let d2 = tempdir().unwrap();
         let f = d2.path().join("a.txt");
         std::fs::write(&f, "hi").unwrap();
-        let mut cfg = crate::config::Config::default();
-        cfg.allowed_roots = vec![d1.path().to_path_buf()];
+        let cfg = crate::config::Config {
+            allowed_roots: vec![d1.path().to_path_buf()],
+            ..Default::default()
+        };
         let err = enforce_allowed_roots(&cfg, &[f.to_string_lossy().to_string()]).unwrap_err();
         assert!(format!("{}", err).contains("not within allowed roots"));
     }

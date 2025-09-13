@@ -353,7 +353,7 @@ pub fn models_pull(_cfg: &Config, account: &str, name: &str) -> Result<(), AppEr
         ));
     }
     let reader = std::io::BufReader::new(resp);
-    for l in reader.lines().flatten() {
+    for l in reader.lines().map_while(Result::ok) {
         if l.trim().is_empty() {
             continue;
         }
