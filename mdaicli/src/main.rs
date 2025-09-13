@@ -90,10 +90,13 @@ fn real_main(cli: Cli) -> Result<(), errors::AppError> {
                 s.provider, account
             );
         }
+        Commands::Help => {
+            println!("{}", helptext::FULL_HELP);
+        }
         Commands::List(l) => match l.which {
             ListType::Providers => {
                 // Static provider list for now
-                println!("openai\nanthropic\nopenrouter");
+                println!("openai\nanthropic\nopenrouter\nollama");
             }
             ListType::Models { provider, refresh } => {
                 let p = provider.unwrap_or_else(|| cfg.default.provider.clone());
@@ -214,6 +217,37 @@ fn real_main(cli: Cli) -> Result<(), errors::AppError> {
                 },
             }
         }
+        Commands::Ollama(oc) => match oc.which {
+            opts::OllamaWhich::Status => {
+                providers::ollama_status(&cfg, cli.account.as_deref().unwrap_or("default"))?;
+            }
+            opts::OllamaWhich::Models { sub } => match sub {
+                opts::OllamaModelsSub::List => {
+                    providers::ollama_models_list(&cfg, cli.account.as_deref().unwrap_or("default"))?;
+                }
+                opts::OllamaModelsSub::Show { name } => {
+                    providers::ollama_models_show(
+                        &cfg,
+                        cli.account.as_deref().unwrap_or("default"),
+                        &name,
+                    )?;
+                }
+                opts::OllamaModelsSub::Pull { name } => {
+                    providers::ollama_models_pull(
+                        &cfg,
+                        cli.account.as_deref().unwrap_or("default"),
+                        &name,
+                    )?;
+                }
+                opts::OllamaModelsSub::Delete { name } => {
+                    providers::ollama_models_delete(
+                        &cfg,
+                        cli.account.as_deref().unwrap_or("default"),
+                        &name,
+                    )?;
+                }
+            },
+        },
     }
 
     Ok(())

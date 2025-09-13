@@ -44,6 +44,23 @@ jobs:
           $out -join "`n" | Out-File -NoNewline dist\SHA256SUMS.txt -Encoding ASCII
           Get-Content dist\SHA256SUMS.txt
 
+      - name: Sign checksums (minisign)
+        if: ${{ secrets.MINISIGN_SECRET_KEY != '' }}
+        shell: bash
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+          MINISIGN_KEY_PASSWORD: ${{ secrets.MINISIGN_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          echo "$MINISIGN_SECRET_KEY" > minisign.key
+          # Install minisign
+          sudo apt-get update && sudo apt-get install -y minisign
+          # Sign the manifest
+          minisign -s minisign.key -Sm dist/SHA256SUMS.txt <<EOF
+          $MINISIGN_KEY_PASSWORD
+          EOF
+          ls -l dist
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:

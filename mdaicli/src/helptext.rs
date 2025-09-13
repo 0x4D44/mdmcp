@@ -2,13 +2,13 @@ pub const FULL_HELP: &str = r#"
 mdaicli — Unified AI CLI with MCP integration
 
 Overview
-- Provider-agnostic interface to OpenAI, Anthropic, and OpenRouter
+- Provider-agnostic interface to OpenAI, Anthropic, OpenRouter, and Ollama
 - Secure credentials (OS keyring; Argon2id + AES-GCM fallback)
 - MCP-aware file access (honors MDAICLI_ALLOWED_ROOTS)
 - Streaming (JSONL or text), caching, rate limiting, audit logging
 
 Global Options
-- -p, --provider <name>        Provider (openai|anthropic|openrouter)
+- -p, --provider <name>        Provider (openai|anthropic|openrouter|ollama)
 - --account <alias>            Account alias (multi-account)
 - --profile <name>             Configuration profile
 - --config <path>              Custom config file
@@ -38,6 +38,7 @@ format = "json"
 openai = "gpt-4"
 anthropic = "claude-3-opus-20240229"
 openrouter = "auto"
+ollama = "llama2"
 
 [cache]
 enabled = true
@@ -159,6 +160,20 @@ Examples:
   mdaicli openai vector-store upload --store-id vs_123 --files notes.md
   mdaicli openai vector-store delete --store-id vs_123
 
+8) ollama — Local/self-hosted provider operations
+Subcommands:
+  models list
+  models show <name>
+  models pull <name>
+  models delete <name>
+  status
+
+Examples:
+  mdaicli ollama status
+  mdaicli ollama models list
+  mdaicli ollama models pull llama2:7b
+  mdaicli query -p ollama -m llama2 --user "Explain quantum computing"
+
 MCP Integration
 - Respect MDAICLI_ALLOWED_ROOTS for any file flags; URIs (http://, https://, file://, mdmcp://) rejected for file inputs.
 - Suggest using MCP resource tools for reading remote/resource URIs.
@@ -192,4 +207,3 @@ Tips
 - Use MDAICLI_ALLOWED_ROOTS to control file access under MCP
 - Set per-provider limits under [limits.<provider>] in config to tune retry/backoff
 "#;
-

@@ -107,6 +107,8 @@ pub async fn run(
     configure_claude: bool,
     local: bool,
     local_path: Option<String>,
+    insecure_skip_verify: bool,
+    verify_key: Option<String>,
 ) -> Result<()> {
     println!("🛠️ Installing mdmcp MCP server...");
 
@@ -146,7 +148,7 @@ pub async fn run(
     let choice = prompt_source_choice(github.is_some(), local_info.is_some())?;
 
     match choice {
-        Some('G') => install_from_github(dest_dir, configure_claude).await,
+        Some('G') => install_from_github(dest_dir, configure_claude, insecure_skip_verify, verify_key).await,
         Some('L') => {
             let (bin, _) = local_info.expect("local info should exist");
             install_from_local_binary(dest_dir, configure_claude, &bin).await
@@ -159,7 +161,7 @@ pub async fn run(
 }
 
 /// Update the MCP server binary
-pub async fn update(channel: String, rollback: bool, force: bool) -> Result<()> {
+pub async fn update(channel: String, rollback: bool, force: bool, insecure_skip_verify: bool, verify_key: Option<String>) -> Result<()> {
     let paths = Paths::new()?;
 
     if rollback {
@@ -188,7 +190,7 @@ pub async fn update(channel: String, rollback: bool, force: bool) -> Result<()> 
         Some(info)
     } else {
         println!("ℹ️  No existing installation found - performing fresh install");
-        return run(None, true, false, None).await;
+        return run(None, true, false, None, false, None).await;
     };
 
     // Probe available sources
@@ -272,7 +274,16 @@ pub async fn update(channel: String, rollback: bool, force: bool) -> Result<()> 
                 (false, None)
             };
 
-            update_from_github(channel, &paths, force, true, restart_claude, claude_path).await
+            update_from_github(
+                channel,
+                &paths,
+                force,
+                true,
+                restart_claude,
+                claude_path,
+                VerificationOptions { skip: insecure_skip_verify, verify_key_path: verify_key.clone() },
+            )
+            .await
         }
         Some('L') => {
             let (local_bin, local_version) = local_info.expect("local info should exist");
@@ -361,29 +372,31 @@ async fn update_from_github(
     preconfirmed: bool,
     restart_claude_after: bool,
     claude_path: Option<String>,
+    vopts: VerificationOptions,
 ) -> Result<()> {
     // Delegate to hook-based implementation for testability
-    let fetch_release = || async {
-        if channel == "stable" {
-            fetch_latest_release().await
-        } else {
-            fetch_latest_prerelease().await
+            let fetch_release = || async {
+                if channel == "stable" {
+                    fetch_latest_release().await
+                } else {
+                    fetch_latest_prerelease().await
+                }
+            };
+            let downloader = |rel: GitHubRelease, prefix: String, dest: PathBuf| async move {
+                download_binary(&rel, &prefix, &dest).await
+            };
+            update_from_github_with_hooks(
+                fetch_release,
+                downloader,
+                paths,
+                force,
+                preconfirmed,
+                restart_claude_after,
+                claude_path,
+                vopts,
+            )
+            .await
         }
-    };
-    let downloader = |rel: GitHubRelease, prefix: String, dest: PathBuf| async move {
-        download_binary(&rel, &prefix, &dest).await
-    };
-    update_from_github_with_hooks(
-        fetch_release,
-        downloader,
-        paths,
-        force,
-        preconfirmed,
-        restart_claude_after,
-        claude_path,
-    )
-    .await
-}
 
 /// Hook-based variant for testing: callers inject release fetch + download functions
 async fn update_from_github_with_hooks<Fetch, FutF, Download, FutD>(
@@ -394,6 +407,7 @@ async fn update_from_github_with_hooks<Fetch, FutF, Download, FutD>(
     preconfirmed: bool,
     restart_claude_after: bool,
     claude_path: Option<String>,
+    vopts: VerificationOptions,
 ) -> Result<()>
 where
     Fetch: Fn() -> FutF,
@@ -435,6 +449,34 @@ where
         binary_path.clone(),
     )
     .await?;
+
+    // Verify downloaded binary against manifest if available
+    if !vopts.skip {
+        if let Ok(sums) = fetch_and_verify_manifest(&release, &vopts).await {
+            // Determine expected asset name
+            let platform = get_platform_string();
+            let wanted = "mdmcpsrvr".to_string();
+            let mut chosen: Option<&GitHubAsset> = release.assets.iter().find(|a| {
+                a.name.to_ascii_lowercase().contains(&wanted) && a.name.contains(&platform)
+            });
+            if chosen.is_none() {
+                chosen = release
+                    .assets
+                    .iter()
+                    .find(|a| a.name.to_ascii_lowercase().contains(&wanted));
+            }
+            if let Some(asset) = chosen {
+                if let Some(exp) = sums.get(&asset.name) {
+                    let got = calculate_sha256(&binary_path)?;
+                    if got.to_lowercase() != exp.to_lowercase() {
+                        bail!("Downloaded server binary checksum mismatch for {}", asset.name);
+                    }
+                } else {
+                    println!("⚠️  No checksum entry for {}; proceeding", asset.name);
+                }
+            }
+        }
+    }
 
     // Update installation info
     let install_info = InstallationInfo::new(release.tag_name.clone(), paths)?;
@@ -566,7 +608,7 @@ async fn update_from_local_binary(
 }
 
 /// Install from GitHub (original logic extracted)
-async fn install_from_github(dest_dir: Option<String>, configure_claude: bool) -> Result<()> {
+async fn install_from_github(dest_dir: Option<String>, configure_claude: bool, insecure_skip_verify: bool, verify_key: Option<String>) -> Result<()> {
     let paths = setup_paths(dest_dir)?;
     paths.ensure_dirs()?;
 
@@ -576,7 +618,9 @@ async fn install_from_github(dest_dir: Option<String>, configure_claude: bool) -
 
     let binary_path = paths.server_binary();
     // Download the server binary specifically
-    download_binary(&release, "mdmcpsrvr", &binary_path).await?;
+    // Set verification options
+    let vopts = VerificationOptions { skip: insecure_skip_verify, verify_key_path: verify_key.clone() };
+    download_binary_verified(&release, "mdmcpsrvr", &binary_path, &vopts).await?;
 
     // Create default core + user policy files if needed
     create_default_policies(&paths).await?;
@@ -2093,7 +2137,16 @@ mod tests {
         std::env::set_var("MDMCP_SKIP_SELF_UPDATE", "1");
 
         // Act
-        update_from_github_with_hooks(fetch, downloader, &paths, false, true, false, None)
+        update_from_github_with_hooks(
+            fetch,
+            downloader,
+            &paths,
+            false,
+            true,
+            false,
+            None,
+            VerificationOptions { skip: true, verify_key_path: None },
+        )
             .await
             .expect("mocked update ok");
 
@@ -2135,7 +2188,16 @@ mod tests {
         };
         std::env::set_var("MDMCP_SKIP_SELF_UPDATE", "1");
         let res =
-            update_from_github_with_hooks(fetch, downloader, &paths, false, true, false, None)
+            update_from_github_with_hooks(
+                fetch,
+                downloader,
+                &paths,
+                false,
+                true,
+                false,
+                None,
+                VerificationOptions { skip: true, verify_key_path: None },
+            )
                 .await;
         assert!(res.is_err());
         std::env::remove_var("MDMCP_SKIP_SELF_UPDATE");
@@ -2170,5 +2232,139 @@ pub fn verify_binary(path: &Path, verification: &BinaryVerification) -> Result<(
             bail!("Invalid signature metadata (empty)");
         }
     }
+    Ok(())
+}
+/// Options controlling binary verification
+#[derive(Debug, Clone)]
+pub struct VerificationOptions {
+    pub skip: bool,
+    #[allow(dead_code)]
+    pub verify_key_path: Option<String>,
+}
+
+/// Minisign public key pinned in the client (to be set when signing is enabled)
+#[allow(dead_code)]
+const MINISIGN_PUBKEY: &str = ""; // Placeholder for future signature enforcement
+
+async fn download_asset_text(url: &str) -> Result<String> {
+    let client = reqwest::Client::new();
+    let resp = client.get(url).header("User-Agent", "mdmcpcfg").send().await?;
+    if !resp.status().is_success() { bail!("Failed to download asset: {}", resp.status()); }
+    Ok(resp.text().await?)
+}
+
+async fn download_asset_bytes(url: &str) -> Result<Vec<u8>> {
+    let client = reqwest::Client::new();
+    let resp = client.get(url).header("User-Agent", "mdmcpcfg").send().await?;
+    if !resp.status().is_success() { bail!("Failed to download asset: {}", resp.status()); }
+    Ok(resp.bytes().await?.to_vec())
+}
+
+fn parse_sha256sums(text: &str) -> Result<std::collections::HashMap<String,String>> {
+    let mut map = std::collections::HashMap::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() { continue; }
+        // Format: <sha256>  <filename>
+        let mut parts = line.split_whitespace();
+        let hash = parts.next().context("Malformed SHA256SUMS line (missing hash)")?;
+        let name = parts.next().context("Malformed SHA256SUMS line (missing filename)")?;
+        map.insert(name.to_string(), hash.to_lowercase());
+    }
+    Ok(map)
+}
+
+async fn fetch_and_verify_manifest(
+    release: &GitHubRelease,
+    _vopts: &VerificationOptions,
+) -> Result<std::collections::HashMap<String,String>> {
+    // Find checksum and signature assets
+    let sums_asset = release
+        .assets
+        .iter()
+        .find(|a| a.name.eq_ignore_ascii_case("SHA256SUMS") || a.name.eq_ignore_ascii_case("SHA256SUMS.txt"))
+        .context("SHA256SUMS manifest not found in release")?;
+    let manifest_text = download_asset_text(&sums_asset.browser_download_url).await?;
+
+    parse_sha256sums(&manifest_text)
+}
+
+async fn download_binary_verified(
+    release: &GitHubRelease,
+    wanted_prefix: &str,
+    dest_path: &Path,
+    vopts: &VerificationOptions,
+) -> Result<()> {
+    let platform = get_platform_string();
+    let wanted_lower = wanted_prefix.to_ascii_lowercase();
+
+    // Choose target asset
+    let mut chosen: Option<&GitHubAsset> = release.assets.iter().find(|a| {
+        a.name.to_ascii_lowercase().contains(&wanted_lower) && a.name.contains(&platform)
+    });
+    if chosen.is_none() {
+        chosen = release
+            .assets
+            .iter()
+            .find(|a| a.name.to_ascii_lowercase().contains(&wanted_lower));
+    }
+    if chosen.is_none() {
+        chosen = release.assets.iter().find(|a| a.name.contains(&platform));
+    }
+    let asset = chosen.with_context(|| format!(
+        "No binary found for prefix '{}' and platform '{}' in release {}",
+        wanted_prefix, platform, release.tag_name
+    ))?;
+
+    // Fetch and (optionally) verify manifest
+    let sums = if vopts.skip {
+        None
+    } else {
+        match fetch_and_verify_manifest(release, vopts).await {
+            Ok(m) => Some(m),
+            Err(e) => {
+                println!("⚠️  Failed to verify manifest: {}", e);
+                None
+            }
+        }
+    };
+
+    // If we have a manifest, look up expected hash for asset name
+    let expected_hash = sums
+        .as_ref()
+        .and_then(|m| m.get(&asset.name).cloned());
+
+    println!("📥 Downloading: {}", asset.name);
+    let bytes = download_asset_bytes(&asset.browser_download_url).await?;
+
+    // If we have an expected hash, verify
+    if let Some(exp) = expected_hash {
+        let got = hex::encode(Sha256::digest(&bytes));
+        if got.to_lowercase() != exp.to_lowercase() {
+            bail!("Downloaded binary checksum mismatch for {}", asset.name);
+        }
+    } else if !vopts.skip {
+        println!("⚠️  No checksum entry found for {}; proceeding without hash verification", asset.name);
+    }
+
+    // Write to destination atomically
+    let mut temp_file = NamedTempFile::new().context("Failed to create temporary file")?;
+    use std::io::Write as _;
+    temp_file
+        .write_all(&bytes)
+        .context("Failed to write temporary file")?;
+    fs::copy(temp_file.path(), dest_path).context("Failed to move binary to destination")?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(dest_path)?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(dest_path, perms)?;
+    }
+    if !is_executable(dest_path) {
+        bail!("Downloaded binary is not executable: {}", dest_path.display());
+    }
+    println!("📦 Binary downloaded: {}", dest_path.display());
     Ok(())
 }

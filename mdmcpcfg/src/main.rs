@@ -44,6 +44,12 @@ enum Commands {
         /// Path to local binary (default: same directory as mdmcpcfg)
         #[arg(long)]
         local_path: Option<String>,
+        /// Skip release signature/hash verification (NOT recommended)
+        #[arg(long)]
+        insecure_skip_verify: bool,
+        /// Override minisign public key path (testing only)
+        #[arg(long)]
+        verify_key: Option<String>,
     },
     /// Internal: helper process to self-upgrade mdmcpcfg
     #[command(hide = true)]
@@ -69,6 +75,12 @@ enum Commands {
         /// Force update even if versions match
         #[arg(long)]
         force: bool,
+        /// Skip release signature/hash verification (NOT recommended)
+        #[arg(long)]
+        insecure_skip_verify: bool,
+        /// Override minisign public key path (testing only)
+        #[arg(long)]
+        verify_key: Option<String>,
     },
     /// Build and cache documentation for tools and commands
     Docs {
@@ -167,12 +179,16 @@ async fn main() -> Result<()> {
             no_claude_config,
             local,
             local_path,
-        } => install::run(dest, !no_claude_config, local, local_path).await,
+            insecure_skip_verify,
+            verify_key,
+        } => install::run(dest, !no_claude_config, local, local_path, insecure_skip_verify, verify_key).await,
         Commands::Update {
             channel,
             rollback,
             force,
-        } => install::update(channel, rollback, force).await,
+            insecure_skip_verify,
+            verify_key,
+        } => install::update(channel, rollback, force, insecure_skip_verify, verify_key).await,
         Commands::Policy(policy_cmd) => match policy_cmd {
             PolicyCommands::Show => policy::show().await,
             PolicyCommands::Edit => policy::edit().await,

@@ -57,6 +57,10 @@ pub enum Commands {
     Config(ConfigCmd),
     /// OpenAI-specific operations (assistant, vector-store, etc.)
     Openai(OpenaiCmd),
+    /// Ollama-specific operations (models, status)
+    Ollama(OllamaCmd),
+    /// Show full help text (all commands on one page)
+    Help,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -245,4 +249,29 @@ pub enum VectorStoreSub {
         #[arg(long = "store-id")]
         store_id: String,
     },
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct OllamaCmd {
+    #[command(subcommand)]
+    pub which: OllamaWhich,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum OllamaWhich {
+    /// Manage models
+    Models {
+        #[command(subcommand)]
+        sub: OllamaModelsSub,
+    },
+    /// Show Ollama server version/status
+    Status,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum OllamaModelsSub {
+    List,
+    Show { name: String },
+    Pull { name: String },
+    Delete { name: String },
 }

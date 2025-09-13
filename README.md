@@ -174,8 +174,10 @@ Restart Claude Desktop after installation.
 - Build: `cargo build --workspace`
 - Run server (stdio):
   `cargo run -p mdmcpsrvr -- --config tests/test_policy.yaml --stdio`
-- Run CLI:
-  `cargo run -p mdmcpcfg -- --help`
+- Run CLIs:
+  - `cargo run -p mdmcpcfg -- --help`
+  - `cargo run -p mdaicli -- --help` (single-page full help)
+  - See `mdaicli/docs/HELP.md` for the same help page in docs form
 - Tests: `cargo test --workspace --all-features`
 - Lint/format: `cargo fmt --all` and
   `cargo clippy --all-targets --all-features -D warnings`

@@ -73,6 +73,7 @@ impl Default for Config {
         models.insert("openai".into(), "gpt-4".into());
         models.insert("anthropic".into(), "claude-3-opus-20240229".into());
         models.insert("openrouter".into(), "auto".into());
+        models.insert("ollama".into(), "llama2".into());
 
         let base = BaseDirs::new();
         let cache_dir = base
