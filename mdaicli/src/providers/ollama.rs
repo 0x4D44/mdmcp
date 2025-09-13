@@ -156,15 +156,23 @@ pub fn run_query(cfg: &Config, account: &str, q: &Query) -> Result<(), AppError>
             ));
         }
         if q.format == "json" {
-            println!("{}", serde_json::to_string(&json!({"event":"start","model": model})).unwrap());
+            println!(
+                "{}",
+                serde_json::to_string(&json!({"event":"start","model": model})).unwrap()
+            );
         } else {
             println!("[Streaming from Ollama {}...]", model);
         }
         let mut accum = String::new();
         let reader = std::io::BufReader::new(resp);
         for line in reader.lines() {
-            let line = match line { Ok(l) => l, Err(_) => break };
-            if line.trim().is_empty() { continue; }
+            let line = match line {
+                Ok(l) => l,
+                Err(_) => break,
+            };
+            if line.trim().is_empty() {
+                continue;
+            }
             if let Ok(obj) = serde_json::from_str::<serde_json::Value>(&line) {
                 if obj.get("done").and_then(|v| v.as_bool()).unwrap_or(false) {
                     break;
@@ -191,8 +199,7 @@ pub fn run_query(cfg: &Config, account: &str, q: &Query) -> Result<(), AppError>
         if q.format == "json" {
             println!(
                 "{}",
-                serde_json::to_string(&json!({"event":"end","finish_reason":"stop"}))
-                    .unwrap()
+                serde_json::to_string(&json!({"event":"end","finish_reason":"stop"})).unwrap()
             );
         } else {
             println!("\n---\n(streaming complete)");
@@ -403,4 +410,3 @@ pub fn status(_cfg: &Config, account: &str) -> Result<(), AppError> {
     println!("{}", resp.text().unwrap_or_default());
     Ok(())
 }
-

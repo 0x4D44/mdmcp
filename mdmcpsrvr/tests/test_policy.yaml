@@ -1,6 +1,6 @@
 version: 1
 deny_network_fs: false
 allowed_roots:
-  - /tmp/.tmpOvxQHh
+  - /tmp/.tmpndNxY6
 write_rules: []
 commands: []

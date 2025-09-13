@@ -181,7 +181,17 @@ async fn main() -> Result<()> {
             local_path,
             insecure_skip_verify,
             verify_key,
-        } => install::run(dest, !no_claude_config, local, local_path, insecure_skip_verify, verify_key).await,
+        } => {
+            install::run(
+                dest,
+                !no_claude_config,
+                local,
+                local_path,
+                insecure_skip_verify,
+                verify_key,
+            )
+            .await
+        }
         Commands::Update {
             channel,
             rollback,

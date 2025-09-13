@@ -223,7 +223,10 @@ fn real_main(cli: Cli) -> Result<(), errors::AppError> {
             }
             opts::OllamaWhich::Models { sub } => match sub {
                 opts::OllamaModelsSub::List => {
-                    providers::ollama_models_list(&cfg, cli.account.as_deref().unwrap_or("default"))?;
+                    providers::ollama_models_list(
+                        &cfg,
+                        cli.account.as_deref().unwrap_or("default"),
+                    )?;
                 }
                 opts::OllamaModelsSub::Show { name } => {
                     providers::ollama_models_show(

@@ -86,4 +86,3 @@ fn ollama_models_list() {
     ep.assert();
     assert!(res.is_ok());
 }
-

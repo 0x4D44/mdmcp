@@ -1,7 +1,7 @@
 mod anthropic;
+mod ollama;
 mod openai;
 mod openrouter;
-mod ollama;
 
 use crate::{
     config::Config,
@@ -80,19 +80,11 @@ pub fn ollama_models_show(cfg: &Config, account: &str, name: &str) -> Result<(),
     ollama::models_show(cfg, account, name)
 }
 
-pub fn ollama_models_pull(
-    cfg: &Config,
-    account: &str,
-    name: &str,
-) -> Result<(), AppError> {
+pub fn ollama_models_pull(cfg: &Config, account: &str, name: &str) -> Result<(), AppError> {
     ollama::models_pull(cfg, account, name)
 }
 
-pub fn ollama_models_delete(
-    cfg: &Config,
-    account: &str,
-    name: &str,
-) -> Result<(), AppError> {
+pub fn ollama_models_delete(cfg: &Config, account: &str, name: &str) -> Result<(), AppError> {
     ollama::models_delete(cfg, account, name)
 }
 
