@@ -31,6 +31,21 @@ jobs:
           Copy-Item target/release/mdjiracli.exe  dist/windows/bin/plugins/mdjiracli.exe
           Copy-Item target/release/mdmailcli.exe  dist/windows/bin/plugins/mdmailcli.exe
           Copy-Item target/release/mdslackcli.exe dist/windows/bin/plugins/mdslackcli.exe
+      - name: Stage raw assets (executables)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist/assets | Out-Null
+          Copy-Item target/release/mdmcpcfg.exe   dist/assets/windows-mdmcpcfg.exe
+          Copy-Item target/release/mdmcpsrvr.exe  dist/assets/windows-mdmcpsrvr.exe
+          Copy-Item target/release/mdaicli.exe    dist/assets/windows-mdaicli.exe
+          Copy-Item target/release/mdconfcli.exe  dist/assets/windows-mdconfcli.exe
+          Copy-Item target/release/mdjiracli.exe  dist/assets/windows-mdjiracli.exe
+          Copy-Item target/release/mdmailcli.exe  dist/assets/windows-mdmailcli.exe
+          Copy-Item target/release/mdslackcli.exe dist/assets/windows-mdslackcli.exe
+          Get-ChildItem -Path dist/assets -Filter 'windows-*.exe' | ForEach-Object {
+            $hash = (Get-FileHash -Algorithm SHA256 -Path $_.FullName).Hash
+            "$hash  $($_.Name)" | Set-Content -Encoding ASCII ("$($_.FullName).sha256")
+          }
       - name: Checksums
         shell: pwsh
         run: |
@@ -51,6 +66,12 @@ jobs:
         with:
           name: bundle-windows
           path: dist/windows
+          if-no-files-found: error
+      - name: Upload windows assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: assets-windows
+          path: dist/assets
           if-no-files-found: error
 
   build-macos:
@@ -74,6 +95,18 @@ jobs:
           cp target/release/mdmailcli dist/macos/bin/plugins/mdmailcli
           cp target/release/mdslackcli dist/macos/bin/plugins/mdslackcli
           chmod +x dist/macos/mdmcpcfg dist/macos/bin/mdmcpsrvr dist/macos/bin/plugins/mdaicli
+      - name: Stage raw assets (executables)
+        run: |
+          mkdir -p dist/assets
+          cp target/release/mdmcpcfg   dist/assets/macos-mdmcpcfg
+          cp target/release/mdmcpsrvr  dist/assets/macos-mdmcpsrvr
+          cp target/release/mdaicli    dist/assets/macos-mdaicli
+          cp target/release/mdconfcli  dist/assets/macos-mdconfcli
+          cp target/release/mdjiracli  dist/assets/macos-mdjiracli
+          cp target/release/mdmailcli  dist/assets/macos-mdmailcli
+          cp target/release/mdslackcli dist/assets/macos-mdslackcli
+          chmod +x dist/assets/macos-*
+          for f in dist/assets/macos-*; do shasum -a 256 "$f" | sed 's|.*/||' > "$f.sha256"; done
       - name: Checksums
         run: |
           (shasum -a 256 dist/macos/mdmcpcfg | awk '{print $1 "  mdmcpcfg"}') > dist/macos/mdmcpcfg.sha256
@@ -83,6 +116,12 @@ jobs:
         with:
           name: bundle-macos
           path: dist/macos
+          if-no-files-found: error
+      - name: Upload macOS assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: assets-macos
+          path: dist/assets
           if-no-files-found: error
 
   build-linux:
@@ -106,6 +145,18 @@ jobs:
           cp target/release/mdmailcli dist/linux/bin/plugins/mdmailcli
           cp target/release/mdslackcli dist/linux/bin/plugins/mdslackcli
           chmod +x dist/linux/mdmcpcfg dist/linux/bin/mdmcpsrvr dist/linux/bin/plugins/mdaicli
+      - name: Stage raw assets (executables)
+        run: |
+          mkdir -p dist/assets
+          cp target/release/mdmcpcfg   dist/assets/linux-mdmcpcfg
+          cp target/release/mdmcpsrvr  dist/assets/linux-mdmcpsrvr
+          cp target/release/mdaicli    dist/assets/linux-mdaicli
+          cp target/release/mdconfcli  dist/assets/linux-mdconfcli
+          cp target/release/mdjiracli  dist/assets/linux-mdjiracli
+          cp target/release/mdmailcli  dist/assets/linux-mdmailcli
+          cp target/release/mdslackcli dist/assets/linux-mdslackcli
+          chmod +x dist/assets/linux-*
+          for f in dist/assets/linux-*; do sha256sum "$f" | sed 's|.*/||' > "$f.sha256"; done
       - name: Checksums
         run: |
           (sha256sum dist/linux/mdmcpcfg | awk '{print $1 "  mdmcpcfg"}') > dist/linux/mdmcpcfg.sha256
@@ -115,6 +166,12 @@ jobs:
         with:
           name: bundle-linux
           path: dist/linux
+          if-no-files-found: error
+      - name: Upload linux assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: assets-linux
+          path: dist/assets
           if-no-files-found: error
 
   assemble:
@@ -135,6 +192,11 @@ jobs:
           mv dist/bundle-windows bundle/windows
           mv dist/bundle-macos bundle/macos
           mv dist/bundle-linux bundle/linux
+          # Collect raw assets
+          mkdir -p assets
+          cp -R dist/assets-windows/* assets/
+          cp -R dist/assets-macos/* assets/
+          cp -R dist/assets-linux/* assets/
       - name: Archive
         run: |
           ver="${GITHUB_REF##*/}"
@@ -155,4 +217,5 @@ jobs:
           files: |
             release-*.tar.gz
             release-*.zip
+            assets/*
           token: ${{ github.token }}
