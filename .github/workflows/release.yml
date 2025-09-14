@@ -31,12 +31,18 @@ jobs:
       - name: Checksums
         shell: pwsh
         run: |
-          (Get-FileHash -Path dist/windows/mdmcpcfg.exe -Algorithm SHA256).Hash + '  mdmcpcfg.exe' | Out-File -Encoding ASCII dist/windows/mdmcpcfg.exe.sha256
-          Get-ChildItem -Path dist/windows -Recurse -File | ForEach-Object {
-            $rel = $_.FullName.Substring((Resolve-Path dist/windows).Path.Length + 1).Replace('\\','/')
-            $hash = (Get-FileHash -Path $_.FullName -Algorithm SHA256).Hash
-            "$hash  $rel" }
-            | Out-File -Encoding ASCII dist/windows/SHA256SUMS.txt
+          $base    = Resolve-Path dist/windows
+          $cli     = Join-Path $base 'mdmcpcfg.exe'
+          $cliSha  = Join-Path $base 'mdmcpcfg.exe.sha256'
+          $shaFile = Join-Path $base 'SHA256SUMS.txt'
+          ((Get-FileHash -Path $cli -Algorithm SHA256).Hash + '  mdmcpcfg.exe') | Set-Content -Encoding ASCII $cliSha
+          $files = Get-ChildItem -Path $base -Recurse -File | Where-Object { $_.Name -ne 'SHA256SUMS.txt' -and $_.Extension -ne '.sha256' }
+          $lines = foreach ($f in $files) {
+            $rel = $f.FullName.Substring($base.Path.Length + 1).Replace('\\','/')
+            $hash = (Get-FileHash -Path $f.FullName -Algorithm SHA256).Hash
+            "$hash  $rel"
+          }
+          $lines | Set-Content -Encoding ASCII $shaFile
       - name: Upload windows artifact
         uses: actions/upload-artifact@v4
         with:
@@ -68,7 +74,7 @@ jobs:
       - name: Checksums
         run: |
           (shasum -a 256 dist/macos/mdmcpcfg | awk '{print $1 "  mdmcpcfg"}') > dist/macos/mdmcpcfg.sha256
-          (cd dist/macos && find . -type f -print0 | xargs -0 shasum -a 256 | sed 's| ./||') > dist/macos/SHA256SUMS.txt
+          (cd dist/macos && find . -type f ! -name 'SHA256SUMS.txt' ! -name '*.sha256' -print0 | xargs -0 shasum -a 256 | sed 's| ./||') > dist/macos/SHA256SUMS.txt
       - name: Upload macOS artifact
         uses: actions/upload-artifact@v4
         with:
@@ -100,7 +106,7 @@ jobs:
       - name: Checksums
         run: |
           (sha256sum dist/linux/mdmcpcfg | awk '{print $1 "  mdmcpcfg"}') > dist/linux/mdmcpcfg.sha256
-          (cd dist/linux && find . -type f -print0 | xargs -0 sha256sum | sed 's| ./||') > dist/linux/SHA256SUMS.txt
+          (cd dist/linux && find . -type f ! -name 'SHA256SUMS.txt' ! -name '*.sha256' -print0 | xargs -0 sha256sum | sed 's| ./||') > dist/linux/SHA256SUMS.txt
       - name: Upload linux artifact
         uses: actions/upload-artifact@v4
         with:
