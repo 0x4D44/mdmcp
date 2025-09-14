@@ -177,7 +177,7 @@ Restart Claude Desktop after installation.
 - Run CLIs:
   - `cargo run -p mdmcpcfg -- --help`
   - `cargo run -p mdaicli -- --help` (single-page full help)
-  - See `mdaicli/docs/HELP.md` for the same help page in docs form
+  - See `plugins/mdaicli/docs/HELP.md` for the same help page in docs form
 - Tests: `cargo test --workspace --all-features`
 - Lint/format: `cargo fmt --all` and
   `cargo clippy --all-targets --all-features -D warnings`

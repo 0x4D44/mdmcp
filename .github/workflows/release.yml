@@ -1,94 +1,138 @@
-name: Release
+name: release-bundles
 
 on:
   push:
     tags:
-      - "v*"
-  workflow_dispatch:
+      - 'v*.*.*'
+  workflow_dispatch: {}
 
 jobs:
   build-windows:
-    name: Build Windows binaries
-    runs-on: windows-2022
+    name: Build Windows bundle
+    runs-on: windows-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Rust (stable)
+      - uses: actions/checkout@v4
+      - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
-
       - name: Build release binaries
         run: |
-          cargo build --release -p mdmcpsrvr -p mdmcpcfg
-
-      - name: Prepare dist folder
+          cargo build --release -p mdmcpcfg -p mdmcpsrvr -p mdaicli
+      - name: Stage bundle
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item target\release\mdmcpsrvr.exe dist\mdmcpsrvr-x86_64-windows.exe
-          Copy-Item target\release\mdmcpcfg.exe  dist\mdmcpcfg-x86_64-windows.exe
-          Get-ChildItem dist
-
-      - name: Generate checksums
+          New-Item -ItemType Directory -Force -Path dist/windows/bin/plugins | Out-Null
+          Copy-Item target/release/mdmcpcfg.exe dist/windows/mdmcpcfg.exe
+          Copy-Item target/release/mdmcpsrvr.exe dist/windows/bin/mdmcpsrvr.exe
+          Copy-Item target/release/mdaicli.exe dist/windows/bin/plugins/mdaicli.exe
+      - name: Checksums
         shell: pwsh
         run: |
-          $files = Get-ChildItem dist\*.exe
-          $out = @()
-          foreach ($f in $files) {
-            $h = Get-FileHash $f.FullName -Algorithm SHA256
-            $out += ("{0}  {1}" -f $h.Hash.ToLower(), $f.Name)
-          }
-          $out -join "`n" | Out-File -NoNewline dist\SHA256SUMS.txt -Encoding ASCII
-          Get-Content dist\SHA256SUMS.txt
-
-      # NOTE: checksum signing is performed on Linux after artifacts are collected
-
-      - name: Upload artifacts
+          (Get-FileHash -Path dist/windows/mdmcpcfg.exe -Algorithm SHA256).Hash + '  mdmcpcfg.exe' | Out-File -Encoding ASCII dist/windows/mdmcpcfg.exe.sha256
+          Get-ChildItem -Path dist/windows -Recurse -File | ForEach-Object {
+            $rel = $_.FullName.Substring((Resolve-Path dist/windows).Path.Length + 1).Replace('\\','/')
+            $hash = (Get-FileHash -Path $_.FullName -Algorithm SHA256).Hash
+            "$hash  $rel" }
+            | Out-File -Encoding ASCII dist/windows/SHA256SUMS.txt
+      - name: Upload windows artifact
         uses: actions/upload-artifact@v4
         with:
-          name: windows-dist
-          path: dist/*
+          name: bundle-windows
+          path: dist/windows
+          if-no-files-found: error
 
-  create-release:
-    name: Create GitHub Release
-    needs: build-windows
-    runs-on: ubuntu-22.04
-    permissions:
-      contents: write
-    env:
-      MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
-      MINISIGN_KEY_PASSWORD: ${{ secrets.MINISIGN_KEY_PASSWORD }}
+  build-macos:
+    name: Build macOS bundle
+    runs-on: macos-latest
     steps:
-      - name: Download Windows artifacts
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Build release binaries
+        run: |
+          cargo build --release -p mdmcpcfg -p mdmcpsrvr -p mdaicli
+      - name: Stage bundle
+        run: |
+          mkdir -p dist/macos/bin/plugins
+          cp target/release/mdmcpcfg dist/macos/mdmcpcfg
+          cp target/release/mdmcpsrvr dist/macos/bin/mdmcpsrvr
+          cp target/release/mdaicli dist/macos/bin/plugins/mdaicli
+          chmod +x dist/macos/mdmcpcfg dist/macos/bin/mdmcpsrvr dist/macos/bin/plugins/mdaicli
+      - name: Checksums
+        run: |
+          (shasum -a 256 dist/macos/mdmcpcfg | awk '{print $1 "  mdmcpcfg"}') > dist/macos/mdmcpcfg.sha256
+          (cd dist/macos && find . -type f -print0 | xargs -0 shasum -a 256 | sed 's| ./||') > dist/macos/SHA256SUMS.txt
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bundle-macos
+          path: dist/macos
+          if-no-files-found: error
+
+  build-linux:
+    name: Build Linux bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Build release binaries
+        run: |
+          cargo build --release -p mdmcpcfg -p mdmcpsrvr -p mdaicli
+      - name: Stage bundle
+        run: |
+          mkdir -p dist/linux/bin/plugins
+          cp target/release/mdmcpcfg dist/linux/mdmcpcfg
+          cp target/release/mdmcpsrvr dist/linux/bin/mdmcpsrvr
+          cp target/release/mdaicli dist/linux/bin/plugins/mdaicli
+          chmod +x dist/linux/mdmcpcfg dist/linux/bin/mdmcpsrvr dist/linux/bin/plugins/mdaicli
+      - name: Checksums
+        run: |
+          (sha256sum dist/linux/mdmcpcfg | awk '{print $1 "  mdmcpcfg"}') > dist/linux/mdmcpcfg.sha256
+          (cd dist/linux && find . -type f -print0 | xargs -0 sha256sum | sed 's| ./||') > dist/linux/SHA256SUMS.txt
+      - name: Upload linux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bundle-linux
+          path: dist/linux
+          if-no-files-found: error
+
+  assemble:
+    name: Assemble universal layout
+    runs-on: ubuntu-latest
+    needs: [build-windows, build-macos, build-linux]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
-          name: windows-dist
           path: dist
-
-      - name: Sign checksums (minisign)
-        if: ${{ env.MINISIGN_SECRET_KEY != '' }}
-        shell: bash
+      - name: Create release tree
         run: |
-          set -euo pipefail
-          echo "$MINISIGN_SECRET_KEY" > minisign.key
-          sudo apt-get update && sudo apt-get install -y minisign
-          # minisign will prompt; feed the passphrase via stdin
-          minisign -s minisign.key -Sm dist/SHA256SUMS.txt <<EOF
-          $MINISIGN_KEY_PASSWORD
-          EOF
-          ls -l dist
-
+          mkdir -p bundle
+          cp ./release/README.md bundle/README.md
+          # Move OS folders under bundle root
+          mv dist/bundle-windows bundle/windows
+          mv dist/bundle-macos bundle/macos
+          mv dist/bundle-linux bundle/linux
+      - name: Archive
+        run: |
+          ver="${GITHUB_REF##*/}"
+          tar -C bundle -czf "release-${ver}.tar.gz" .
+          (cd bundle && zip -r "../release-${ver}.zip" .)
+      - name: Upload assembled artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-bundles
+          path: |
+            release-*.tar.gz
+            release-*.zip
+          if-no-files-found: error
       - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          draft: false
-          prerelease: false
-          generate_release_notes: true
-          tag_name: ${{ github.ref_name }}
           files: |
-            dist/*
+            release-*.tar.gz
+            release-*.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

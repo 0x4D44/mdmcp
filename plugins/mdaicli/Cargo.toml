@@ -1,6 +1,6 @@
 [package]
 name = "mdaicli"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2021"
 description = "CLI for unified access to AI providers with MCP integration"
 
