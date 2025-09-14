@@ -1540,6 +1540,22 @@ async fn download_binary(
     wanted_prefix: &str,
     dest_path: &Path,
 ) -> Result<()> {
+    // Special-case server binary: prefer extracting from per-OS binaries zip
+    if wanted_prefix.eq_ignore_ascii_case("mdmcpsrvr") {
+        let v = VerificationOptions {
+            skip: true,
+            verify_key_path: None,
+        };
+        if let Err(e) = download_server_from_zip_verified(release, dest_path, &v).await {
+            // Fall back to legacy direct-asset logic below
+            println!(
+                "ℹ️  Zip-based server download not available ({}); trying raw asset…",
+                e
+            );
+        } else {
+            return Ok(());
+        }
+    }
     let platform = get_platform_string();
     let wanted_lower = wanted_prefix.to_ascii_lowercase();
 
