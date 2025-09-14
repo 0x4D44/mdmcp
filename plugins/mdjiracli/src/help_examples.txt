@@ -1,0 +1,44 @@
+EXAMPLES
+
+Setup credentials and verify access:
+  jira init
+    • Prompts for base URL (e.g., https://acme.atlassian.net), username (email), and API token
+    • Saves to OS keyring (service: jira-cli; keys: base_url, username, token)
+    • Verifies access via Agile API (/rest/agile/1.0/board?maxResults=1)
+
+Quick auth check and identity:
+  jira whoami
+    • Triggers the same Agile API verification
+    • Prints: "Auth OK (Agile) for <username> @ <base_url>"
+
+Show stored credentials (token masked) or reset them:
+  jira auth-show
+  jira auth-reset
+
+List Agile boards (simplified fields):
+  jira agile-boards --limit 10
+
+List issues on a board:
+  jira agile-board-issues --board 123 --limit 20
+  jira agile-board-issues --board 123 --fields summary,assignee,status,updated
+  jira agile-board-issues --board 123 --jql "assignee = currentUser() ORDER BY updated DESC"
+
+Get a single issue via Agile API:
+  jira agile-issue-get ABC-123
+  jira agile-issue-get ABC-123 --fields summary,description,status,assignee
+
+JSON output controls (apply to all commands):
+  --pretty             Pretty-print JSON
+  --max-len <N>        Truncate strings longer than N (default: 512)
+  --max-items <N>      Truncate arrays beyond N items (default: 50)
+
+Examples with JSON flags:
+  jira agile-boards --limit 5 --pretty
+  jira agile-board-issues --board 123 --fields summary,updated --max-len 200 --max-items 10
+
+Notes
+  - Base URL must be your Jira Cloud site (e.g., https://acme.atlassian.net). The CLI normalizes URLs
+    if you include /rest/api/* segments.
+  - The Agile API is used to validate credentials for a consistent, read-only experience.
+  - Credentials are only stored in the OS keyring and are never logged. Use `auth-reset` to clear them.
+
