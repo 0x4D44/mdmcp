@@ -18,7 +18,12 @@ Contents:
   - `SHA256SUMS.txt` — checksums for all files in this folder
   - `bin/` — server and plugin binaries for convenience/offline installs
     - `mdmcpsrvr[.exe]`
-    - `plugins/mdaicli[.exe]`
+    - `plugins/` — CLI plugins:
+      - `mdaicli[.exe]`
+      - `mdconfcli[.exe]`
+      - `mdjiracli[.exe]`
+      - `mdmailcli[.exe]`
+      - `mdslackcli[.exe]`
 
 Notes:
 - If your OS blocks execution, you may need to clear quarantine/SmartScreen and/or `chmod +x mdmcpcfg`.

@@ -16,14 +16,18 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       - name: Build release binaries
         run: |
-          cargo build --release -p mdmcpcfg -p mdmcpsrvr -p mdaicli
+          cargo build --release -p mdmcpcfg -p mdmcpsrvr -p mdaicli -p mdconfcli -p mdjiracli -p mdmailcli -p mdslackcli
       - name: Stage bundle
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist/windows/bin/plugins | Out-Null
           Copy-Item target/release/mdmcpcfg.exe dist/windows/mdmcpcfg.exe
           Copy-Item target/release/mdmcpsrvr.exe dist/windows/bin/mdmcpsrvr.exe
-          Copy-Item target/release/mdaicli.exe dist/windows/bin/plugins/mdaicli.exe
+          Copy-Item target/release/mdaicli.exe    dist/windows/bin/plugins/mdaicli.exe
+          Copy-Item target/release/mdconfcli.exe  dist/windows/bin/plugins/mdconfcli.exe
+          Copy-Item target/release/mdjiracli.exe  dist/windows/bin/plugins/mdjiracli.exe
+          Copy-Item target/release/mdmailcli.exe  dist/windows/bin/plugins/mdmailcli.exe
+          Copy-Item target/release/mdslackcli.exe dist/windows/bin/plugins/mdslackcli.exe
       - name: Checksums
         shell: pwsh
         run: |
@@ -49,13 +53,17 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       - name: Build release binaries
         run: |
-          cargo build --release -p mdmcpcfg -p mdmcpsrvr -p mdaicli
+          cargo build --release -p mdmcpcfg -p mdmcpsrvr -p mdaicli -p mdconfcli -p mdjiracli -p mdmailcli -p mdslackcli
       - name: Stage bundle
         run: |
           mkdir -p dist/macos/bin/plugins
           cp target/release/mdmcpcfg dist/macos/mdmcpcfg
           cp target/release/mdmcpsrvr dist/macos/bin/mdmcpsrvr
-          cp target/release/mdaicli dist/macos/bin/plugins/mdaicli
+          cp target/release/mdaicli   dist/macos/bin/plugins/mdaicli
+          cp target/release/mdconfcli dist/macos/bin/plugins/mdconfcli
+          cp target/release/mdjiracli dist/macos/bin/plugins/mdjiracli
+          cp target/release/mdmailcli dist/macos/bin/plugins/mdmailcli
+          cp target/release/mdslackcli dist/macos/bin/plugins/mdslackcli
           chmod +x dist/macos/mdmcpcfg dist/macos/bin/mdmcpsrvr dist/macos/bin/plugins/mdaicli
       - name: Checksums
         run: |
@@ -77,13 +85,17 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       - name: Build release binaries
         run: |
-          cargo build --release -p mdmcpcfg -p mdmcpsrvr -p mdaicli
+          cargo build --release -p mdmcpcfg -p mdmcpsrvr -p mdaicli -p mdconfcli -p mdjiracli -p mdmailcli -p mdslackcli
       - name: Stage bundle
         run: |
           mkdir -p dist/linux/bin/plugins
           cp target/release/mdmcpcfg dist/linux/mdmcpcfg
           cp target/release/mdmcpsrvr dist/linux/bin/mdmcpsrvr
-          cp target/release/mdaicli dist/linux/bin/plugins/mdaicli
+          cp target/release/mdaicli   dist/linux/bin/plugins/mdaicli
+          cp target/release/mdconfcli dist/linux/bin/plugins/mdconfcli
+          cp target/release/mdjiracli dist/linux/bin/plugins/mdjiracli
+          cp target/release/mdmailcli dist/linux/bin/plugins/mdmailcli
+          cp target/release/mdslackcli dist/linux/bin/plugins/mdslackcli
           chmod +x dist/linux/mdmcpcfg dist/linux/bin/mdmcpsrvr dist/linux/bin/plugins/mdaicli
       - name: Checksums
         run: |

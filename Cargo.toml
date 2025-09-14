@@ -5,6 +5,10 @@ members = [
   "crates/mdmcp_policy",
   "crates/mdmcp_common",
   "plugins/mdaicli",
+  "plugins/mdconfcli",
+  "plugins/mdjiracli",
+  "plugins/mdmailcli",
+  "plugins/mdslackcli",
 ]
 resolver = "2"
 
