@@ -1540,6 +1540,75 @@ async fn download_binary(
     wanted_prefix: &str,
     dest_path: &Path,
 ) -> Result<()> {
+    // Special-case mdmcpcfg: our release assets use OS-prefixed names
+    if wanted_prefix.eq_ignore_ascii_case("mdmcpcfg") {
+        let expected: &str = if cfg!(target_os = "windows") {
+            "windows-mdmcpcfg.exe"
+        } else if cfg!(target_os = "macos") {
+            "macos-mdmcpcfg"
+        } else if cfg!(target_os = "linux") {
+            "linux-mdmcpcfg"
+        } else {
+            bail!("Unsupported OS for mdmcpcfg self-update");
+        };
+
+        let chosen = release
+            .assets
+            .iter()
+            .find(|a| a.name.eq_ignore_ascii_case(expected))
+            .or_else(|| {
+                let name = wanted_prefix.to_ascii_lowercase();
+                let os_hint = if cfg!(target_os = "windows") {
+                    "windows"
+                } else if cfg!(target_os = "macos") {
+                    "macos"
+                } else {
+                    "linux"
+                };
+                release.assets.iter().find(|a| {
+                    let an = a.name.to_ascii_lowercase();
+                    an.contains(&name) && an.contains(os_hint)
+                })
+            })
+            .with_context(|| format!("No mdmcpcfg asset found for OS: {}", expected))?;
+
+        println!("📥 Downloading: {}", chosen.name);
+        let client = reqwest::Client::new();
+        let response = client
+            .get(&chosen.browser_download_url)
+            .header("User-Agent", "mdmcpcfg")
+            .send()
+            .await
+            .context("Failed to download binary")?;
+        if !response.status().is_success() {
+            bail!("Download failed: {}", response.status());
+        }
+        let mut temp_file = NamedTempFile::new().context("Failed to create temporary file")?;
+        let content = response
+            .bytes()
+            .await
+            .context("Failed to read download content")?;
+        use std::io::Write;
+        temp_file
+            .write_all(&content)
+            .context("Failed to write temporary file")?;
+        fs::copy(temp_file.path(), dest_path).context("Failed to move binary to destination")?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(dest_path)?.permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(dest_path, perms)?;
+        }
+        if !is_executable(dest_path) {
+            bail!(
+                "Downloaded binary is not executable: {}",
+                dest_path.display()
+            );
+        }
+        println!("📦 Binary downloaded: {}", dest_path.display());
+        return Ok(());
+    }
     // Special-case server binary: prefer extracting from per-OS binaries zip
     if wanted_prefix.eq_ignore_ascii_case("mdmcpsrvr") {
         let v = VerificationOptions {
