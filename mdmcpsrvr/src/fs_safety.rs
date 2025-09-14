@@ -406,7 +406,7 @@ pub(crate) fn is_network_fs(path: &Path) -> Result<bool, FsError> {
 }
 
 #[cfg(target_os = "macos")]
-fn is_network_fs(path: &Path) -> Result<bool, FsError> {
+pub(crate) fn is_network_fs(path: &Path) -> Result<bool, FsError> {
     use std::ffi::{CStr, CString};
     use std::mem;
     use std::os::unix::ffi::OsStrExt;
