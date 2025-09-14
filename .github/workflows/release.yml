@@ -6,6 +6,9 @@ on:
       - 'v*.*.*'
   workflow_dispatch: {}
 
+permissions:
+  contents: write
+
 jobs:
   build-windows:
     name: Build Windows bundle
@@ -152,5 +155,4 @@ jobs:
           files: |
             release-*.tar.gz
             release-*.zip
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ github.token }}
