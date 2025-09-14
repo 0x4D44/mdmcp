@@ -645,7 +645,10 @@ async fn install_from_github(
     };
     // Prefer per-OS binaries ZIP; fallback to raw binary for backward compatibility
     if let Err(e) = download_server_from_zip_verified(&release, &binary_path, &vopts).await {
-        println!("ℹ️  Zip-based download failed ({}). Falling back to raw binary…", e);
+        println!(
+            "ℹ️  Zip-based download failed ({}). Falling back to raw binary…",
+            e
+        );
         download_binary_verified(&release, "mdmcpsrvr", &binary_path, &vopts).await?;
     }
 
@@ -2464,7 +2467,11 @@ async fn download_server_from_zip_verified(
         {
             let text = download_asset_text(&side.browser_download_url).await?;
             let hash = text.split_whitespace().next().unwrap_or("");
-            if hash.len() == 64 { Some(hash.to_lowercase()) } else { None }
+            if hash.len() == 64 {
+                Some(hash.to_lowercase())
+            } else {
+                None
+            }
         } else {
             None
         }
@@ -2478,7 +2485,10 @@ async fn download_server_from_zip_verified(
             bail!("Downloaded ZIP checksum mismatch for {}", asset.name);
         }
     } else if !vopts.skip {
-        println!("⚠️  No checksum found for {}; proceeding without hash verification", asset.name);
+        println!(
+            "⚠️  No checksum found for {}; proceeding without hash verification",
+            asset.name
+        );
     }
 
     // Extract desired entry to dest_path

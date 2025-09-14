@@ -34,7 +34,8 @@ jobs:
       - name: Stage raw assets (mdmcpcfg only)
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path dist/assets dist/zips | Out-Null
+          New-Item -ItemType Directory -Force -Path dist/assets | Out-Null
+          New-Item -ItemType Directory -Force -Path dist/zips   | Out-Null
           Copy-Item target/release/mdmcpcfg.exe   dist/assets/windows-mdmcpcfg.exe
           $hash = (Get-FileHash -Algorithm SHA256 -Path dist/assets/windows-mdmcpcfg.exe).Hash
           "$hash  windows-mdmcpcfg.exe" | Set-Content -Encoding ASCII dist/assets/windows-mdmcpcfg.exe.sha256
