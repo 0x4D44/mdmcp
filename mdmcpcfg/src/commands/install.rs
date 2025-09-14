@@ -643,7 +643,11 @@ async fn install_from_github(
         skip: insecure_skip_verify,
         verify_key_path: verify_key.clone(),
     };
-    download_binary_verified(&release, "mdmcpsrvr", &binary_path, &vopts).await?;
+    // Prefer per-OS binaries ZIP; fallback to raw binary for backward compatibility
+    if let Err(e) = download_server_from_zip_verified(&release, &binary_path, &vopts).await {
+        println!("ℹ️  Zip-based download failed ({}). Falling back to raw binary…", e);
+        download_binary_verified(&release, "mdmcpsrvr", &binary_path, &vopts).await?;
+    }
 
     // Create default core + user policy files if needed
     create_default_policies(&paths).await?;
@@ -2421,5 +2425,99 @@ async fn download_binary_verified(
         );
     }
     println!("📦 Binary downloaded: {}", dest_path.display());
+    Ok(())
+}
+
+/// Download the per-OS binaries zip and extract bin/mdmcpsrvr[.exe]
+async fn download_server_from_zip_verified(
+    release: &GitHubRelease,
+    dest_path: &Path,
+    vopts: &VerificationOptions,
+) -> Result<()> {
+    let zip_name = if cfg!(target_os = "windows") {
+        "windows-binaries.zip"
+    } else if cfg!(target_os = "macos") {
+        "macos-binaries.zip"
+    } else if cfg!(target_os = "linux") {
+        "linux-binaries.zip"
+    } else {
+        bail!("Unsupported OS for zip-based install");
+    };
+
+    let asset = release
+        .assets
+        .iter()
+        .find(|a| a.name == zip_name)
+        .with_context(|| format!("Zip asset not found in release: {}", zip_name))?;
+
+    // Try to obtain expected hash: prefer SHA256SUMS manifest, else <zip>.sha256 sidecar
+    let expected_hash = if vopts.skip {
+        None
+    } else if let Ok(map) = fetch_and_verify_manifest(release, vopts).await {
+        map.get(zip_name).cloned()
+    } else {
+        // Look for sidecar sha256
+        if let Some(side) = release
+            .assets
+            .iter()
+            .find(|a| a.name.eq_ignore_ascii_case(&format!("{}.sha256", zip_name)))
+        {
+            let text = download_asset_text(&side.browser_download_url).await?;
+            let hash = text.split_whitespace().next().unwrap_or("");
+            if hash.len() == 64 { Some(hash.to_lowercase()) } else { None }
+        } else {
+            None
+        }
+    };
+
+    println!("📦 Downloading ZIP: {}", asset.name);
+    let bytes = download_asset_bytes(&asset.browser_download_url).await?;
+    if let Some(exp) = expected_hash {
+        let got = hex::encode(Sha256::digest(&bytes));
+        if got.to_lowercase() != exp.to_lowercase() {
+            bail!("Downloaded ZIP checksum mismatch for {}", asset.name);
+        }
+    } else if !vopts.skip {
+        println!("⚠️  No checksum found for {}; proceeding without hash verification", asset.name);
+    }
+
+    // Extract desired entry to dest_path
+    let target_entry = if cfg!(target_os = "windows") {
+        "bin/mdmcpsrvr.exe"
+    } else {
+        "bin/mdmcpsrvr"
+    };
+
+    let reader = std::io::Cursor::new(bytes);
+    let mut zip = zip::ZipArchive::new(reader).context("Failed to read zip archive")?;
+    let mut file = zip
+        .by_name(target_entry)
+        .with_context(|| format!("Entry not found in zip: {}", target_entry))?;
+
+    // Write out atomically
+    let mut temp_file = NamedTempFile::new().context("Failed to create temporary file")?;
+    use std::io::{Read as _, Write as _};
+    let mut buf = Vec::with_capacity(file.size() as usize);
+    file.read_to_end(&mut buf)
+        .context("Failed to read entry from zip")?;
+    temp_file
+        .write_all(&buf)
+        .context("Failed to write temporary file")?;
+    fs::copy(temp_file.path(), dest_path).context("Failed to move binary to destination")?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(dest_path)?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(dest_path, perms)?;
+    }
+    if !is_executable(dest_path) {
+        bail!(
+            "Extracted binary is not executable: {}",
+            dest_path.display()
+        );
+    }
+    println!("📦 Extracted mdmcpsrvr from {}", zip_name);
     Ok(())
 }

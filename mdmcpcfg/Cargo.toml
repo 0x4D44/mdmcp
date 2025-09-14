@@ -27,6 +27,7 @@ shellexpand = "3.1"
 which = "6.0"
 mdmcp_policy = { path = "../crates/mdmcp_policy" }
 mdmcp_common = { path = "../crates/mdmcp_common" }
+zip = { version = "0.6", default-features = true }
 
 [build-dependencies]
 winres = { version = "0.1", optional = false }
