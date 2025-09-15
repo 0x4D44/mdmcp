@@ -195,7 +195,7 @@ struct ListArgs {
 
 #[derive(Args, Debug)]
 struct MsgsArgs {
-    /// Channel ID (e.g., C123ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ or D123ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦)
+    /// Channel ID (e.g., C123… or D123…)
     #[arg(long)]
     channel: String,
     #[arg(long, default_value_t = 25)]
@@ -758,7 +758,7 @@ fn fetch_users_map(client: &Client, token: &str) -> Result<HashMap<String, UserI
 /// Prompt user for a Slack user token and return it.
 fn prompt_for_token() -> Result<String> {
     let token = Password::new()
-        .with_prompt("Slack user token (xoxp-Ã¢â‚¬Â¦)")
+        .with_prompt("Slack user token (xoxp-…)")
         .interact()
         .context("failed to read token from prompt")?;
     let token = token.trim().to_string();

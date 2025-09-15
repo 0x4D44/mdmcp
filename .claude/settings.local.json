@@ -22,7 +22,8 @@
       "WebSearch",
       "Bash(tree:*)",
       "Bash(dir:*)",
-      "Read(//c/**)"
+      "Read(//c/**)",
+      "Bash(cargo clippy:*)"
     ],
     "deny": [],
     "ask": []

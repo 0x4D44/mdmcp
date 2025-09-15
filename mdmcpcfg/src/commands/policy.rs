@@ -42,6 +42,70 @@ pub async fn show() -> Result<()> {
     Ok(())
 }
 
+/// Reload policy in the active client by restarting Claude Desktop when applicable.
+/// Note: MCP servers are spawned by clients (e.g., Claude Desktop) over stdio. There is no
+/// direct IPC channel to an already-running server from this CLI, so the most reliable way to
+/// apply changes is to restart the client so it reinitializes the server.
+pub async fn reload() -> Result<()> {
+    println!("INFO: Rebuilding documentation cache before reload...");
+    let _ = docs::build().await;
+
+    #[cfg(target_os = "windows")]
+    {
+        // Try to stop Claude Desktop if running, then start it again
+        let stopped = std::process::Command::new("taskkill")
+            .args(["/IM", "Claude.exe", "/F", "/T"])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if stopped {
+            println!("✅ Stopped Claude Desktop");
+        } else {
+            println!("ℹ️  Claude Desktop was not running or could not be stopped");
+        }
+        // Best-effort start
+        let _ = std::process::Command::new("cmd")
+            .args(["/C", "start", "", "Claude.exe"])
+            .spawn();
+        println!("✅ Requested Claude Desktop start");
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("osascript")
+            .args(["-e", "tell application \"Claude\" to quit"])
+            .status();
+        let _ = std::process::Command::new("open")
+            .args(["-a", "Claude"])
+            .status();
+        println!("✅ Restarted Claude Desktop");
+        return Ok(());
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        // Linux: if running inside WSL, attempt to stop/start the Windows app via cmd.exe
+        if crate::io::is_wsl() {
+            let cmd = "/mnt/c/Windows/System32/cmd.exe";
+            if std::path::Path::new(cmd).exists() {
+                let _ = std::process::Command::new(cmd)
+                    .args(["/C", "taskkill /IM Claude.exe /F /T"])
+                    .status();
+                let _ = std::process::Command::new(cmd)
+                    .args(["/C", "start \"\" Claude.exe"]) // empty title
+                    .status();
+                println!("✅ Asked Windows host to restart Claude Desktop");
+                Ok(())
+            }
+        }
+        println!(
+            "ℹ️  On Linux, restart your MCP client (e.g., Claude Desktop) to reload the policy."
+        );
+        Ok(())
+    }
+}
+
 /// Edit policy file in default editor
 pub async fn edit() -> Result<()> {
     let paths = Paths::new()?;
@@ -62,7 +126,7 @@ pub async fn edit() -> Result<()> {
             .or_else(|_| which::which("Code.exe"))
         {
             println!(
-                "ðŸ“ Opening user and core policies in VS Code: {}, {}",
+                "📝 Opening user and core policies in VS Code: {}, {}",
                 paths.policy_file.display(),
                 paths.core_policy_file.display()
             );
@@ -76,13 +140,13 @@ pub async fn edit() -> Result<()> {
                 .status()
                 .context("Failed to launch VS Code")?;
             if !status.success() {
-                println!("âš ï¸  VS Code exited with non-zero status; falling back to single-file editor for user policy.");
+                println!("⚠️  VS Code exited with non-zero status; falling back to single-file editor for user policy.");
                 open_single_file_editor(&paths.policy_file)?;
             }
         } else {
             // Fall back to opening core (read-only) then user overlay
             println!(
-                "ðŸ“„ Opening core policy (read-only) for reference: {}",
+                "📄 Opening core policy (read-only) for reference: {}",
                 paths.core_policy_file.display()
             );
             edit::edit_file(&paths.core_policy_file).with_context(|| {
@@ -122,7 +186,7 @@ pub async fn edit() -> Result<()> {
     println!("INFO: Building documentation cache...");
     match docs::build().await {
         Ok(()) => println!("✓ Documentation cache built"),
-        Err(e) => println!("âš ï¸  Failed to build documentation cache: {}", e),
+        Err(e) => println!("⚠️  Failed to build documentation cache: {}", e),
     }
 
     Ok(())
@@ -147,7 +211,7 @@ pub async fn validate(file_path: Option<String>) -> Result<()> {
         bail!("Policy file not found: {}", policy_file.display());
     }
 
-    println!("ðŸ” Validating policy file: {}", policy_file.display());
+    println!("🔍 Validating policy file: {}", policy_file.display());
 
     let content = read_file(&policy_file)?;
 
@@ -157,7 +221,7 @@ pub async fn validate(file_path: Option<String>) -> Result<()> {
     // Basic validation
     validate_policy_structure(&policy)?;
 
-    println!("âœ… Policy file is valid");
+    println!("✅ Policy file is valid");
     print_policy_summary(&policy)?;
 
     Ok(())
@@ -238,7 +302,7 @@ pub async fn set_exec(id: String, exec: String) -> Result<()> {
 
 /// Validate merged core + user policies by compiling via mdmcp_policy
 async fn validate_merged(paths: &Paths) -> Result<()> {
-    println!("ðŸ” Validating merged policy (core + user)...");
+    println!("🔍 Validating merged policy (core + user)...");
     let user_content = read_file(&paths.policy_file)?;
     let core_content = read_file(&paths.core_policy_file)?;
 
@@ -252,7 +316,7 @@ async fn validate_merged(paths: &Paths) -> Result<()> {
         .compile()
         .context("Merged policy failed to compile (check allowed_roots, commands, write_rules)")?;
 
-    println!("âœ… Merged policy is valid");
+    println!("✅ Merged policy is valid");
     Ok(())
 }
 
@@ -280,9 +344,9 @@ pub async fn add_root(path: String, enable_write: bool) -> Result<()> {
     let new_root = Value::String(path.clone());
     if !allowed_roots.contains(&new_root) {
         allowed_roots.push(new_root);
-        println!("âœ… Added allowed root: {}", path);
+        println!("✅ Added allowed root: {}", path);
     } else {
-        println!("â„¹ï¸  Root already exists: {}", path);
+        println!("ℹ️  Root already exists: {}", path);
     }
 
     // Add to write_rules if requested
@@ -310,9 +374,9 @@ pub async fn add_root(path: String, enable_write: bool) -> Result<()> {
 
         if !path_exists {
             write_rules.push(new_write_rule);
-            println!("âœ… Added write rule for: {}", path);
+            println!("✅ Added write rule for: {}", path);
         } else {
-            println!("â„¹ï¸  Write rule already exists for: {}", path);
+            println!("ℹ️  Write rule already exists for: {}", path);
         }
     }
 
@@ -434,14 +498,14 @@ pub async fn add_command(
 
     write_file(&paths.policy_file, &updated_content)?;
 
-    println!("âœ… Added command '{}' to policy", id);
+    println!("✅ Added command '{}' to policy", id);
     println!("✓ Policy file updated: {}", paths.policy_file.display());
 
     // Auto-generate documentation cache (non-blocking semantics)
     println!("INFO: Building documentation cache...");
     match docs::build().await {
         Ok(()) => println!("✓ Documentation cache built"),
-        Err(e) => println!("âš ï¸  Failed to build documentation cache: {}", e),
+        Err(e) => println!("⚠️  Failed to build documentation cache: {}", e),
     }
 
     Ok(())
@@ -494,7 +558,7 @@ pub async fn set_env(id: String, kv: Vec<String>) -> Result<()> {
 
     let updated = serde_yaml::to_string(&policy).context("Failed to serialize updated policy")?;
     write_file(&paths.policy_file, &updated)?;
-    println!("âœ… Updated env_static for command '{}'", id);
+    println!("✅ Updated env_static for command '{}'", id);
     Ok(())
 }
 
@@ -534,7 +598,7 @@ pub async fn unset_env(id: String, names: Vec<String>) -> Result<()> {
     }
     let updated = serde_yaml::to_string(&policy).context("Failed to serialize updated policy")?;
     write_file(&paths.policy_file, &updated)?;
-    println!("âœ… Removed env_static entries for '{}'", id);
+    println!("✅ Removed env_static entries for '{}'", id);
     Ok(())
 }
 
@@ -579,7 +643,7 @@ pub async fn list_env(id: String) -> Result<()> {
 
 /// Print a summary of the policy configuration
 fn print_policy_summary(policy: &Value) -> Result<()> {
-    println!("ðŸ“Š Policy Summary:");
+    println!("📊 Policy Summary:");
 
     // Version
     if let Some(version) = policy.get("version").and_then(|v| v.as_i64()) {
@@ -709,9 +773,9 @@ fn validate_policy_structure(policy: &Value) -> Result<()> {
             .with_context(|| format!("Command {}: 'exec' must be a string", cmd_id))?;
     }
 
-    println!("   âœ… Policy structure is valid");
-    println!("   âœ… Found {} allowed roots", allowed_roots.len());
-    println!("   âœ… Found {} commands", commands.len());
+    println!("   ✅ Policy structure is valid");
+    println!("   ✅ Found {} allowed roots", allowed_roots.len());
+    println!("   ✅ Found {} commands", commands.len());
 
     Ok(())
 }

@@ -116,7 +116,7 @@ impl Paths {
 
 /// Return true if running under Windows Subsystem for Linux
 #[cfg(target_os = "linux")]
-fn is_wsl() -> bool {
+pub fn is_wsl() -> bool {
     // Environment variables commonly set by WSL
     if std::env::var("WSL_INTEROP").is_ok() || std::env::var("WSL_DISTRO_NAME").is_ok() {
         return true;
@@ -132,7 +132,7 @@ fn is_wsl() -> bool {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn is_wsl() -> bool {
+pub fn is_wsl() -> bool {
     false
 }
 

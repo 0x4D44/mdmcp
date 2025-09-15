@@ -516,7 +516,7 @@ async fn install_server_in_wsl(
         wsl_stage.replace("'", "'\\''")
     );
     wsl_exec(distro_arg, &copy_cmd)?;
-    let install_cmd = "printf 'g\n' | ~/.local/share/mdmcpcfg/bin/mdmcpcfg install --no-claude-config --dest ~/.local/share/mdmcp/bin";
+    let install_cmd = "printf 'g\n' | ~/.local/share/mdmcpcfg/bin/mdmcpcfg install --no-claude-config --plugins no --server-target windows -y --dest ~/.local/share/mdmcp/bin";
     wsl_exec(distro_arg, install_cmd)?;
     println!("✅ Installed mdmcpsrvr in WSL");
     Ok(())
@@ -1142,6 +1142,36 @@ async fn install_from_github(
     println!("🔎 Found release: {}", release.tag_name);
 
     let binary_path = paths.server_binary();
+    // On Windows, try to stop likely lockers (Claude, VS Code) before writing the binary
+    #[cfg(target_os = "windows")]
+    {
+        if binary_path.exists() {
+            let mut suspects: Vec<&str> = Vec::new();
+            if is_mdmcp_running() {
+                let chain = mdmcp_parent_chain_names_lower();
+                if chain.iter().any(|n| n.contains("claude.exe")) {
+                    suspects.push("Claude Desktop");
+                }
+                if chain.iter().any(|n| n.contains("code.exe")) {
+                    suspects.push("VS Code");
+                }
+            }
+            if !suspects.is_empty() {
+                println!(
+                    "The following apps appear related to a running mdmcpsrvr process: {}",
+                    suspects.join(", ")
+                );
+                if prompt_named_confirmation("Stop them now? [Y/n]: ")? {
+                    if suspects.contains(&"Claude Desktop") {
+                        let _ = stop_claude_desktop();
+                    }
+                    if suspects.contains(&"VS Code") {
+                        let _ = stop_vs_code();
+                    }
+                }
+            }
+        }
+    }
     // Download the server binary specifically
     // Set verification options
     let vopts = VerificationOptions {
@@ -3169,8 +3199,19 @@ async fn download_binary_verified(
 
     // Choose target asset
     let mut chosen: Option<&GitHubAsset> = release.assets.iter().find(|a| {
-        a.name.to_ascii_lowercase().contains(&wanted_lower) && a.name.contains(&platform)
+        let name = a.name.to_ascii_lowercase();
+        name.contains(&wanted_lower) && name.contains(&platform)
     });
+    if chosen.is_none() {
+        // On Windows, prefer .exe or names containing "windows" even if platform string differs
+        #[cfg(target_os = "windows")]
+        {
+            chosen = release.assets.iter().find(|a| {
+                let name = a.name.to_ascii_lowercase();
+                name.contains(&wanted_lower) && (name.ends_with(".exe") || name.contains("windows"))
+            });
+        }
+    }
     if chosen.is_none() {
         chosen = release
             .assets

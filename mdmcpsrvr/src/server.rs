@@ -1427,7 +1427,7 @@ impl Server {
             "reload_policy" => match self.reload_policy().await {
                 Ok(new_policy) => {
                     let msg = format!(
-                        "Policy reloaded successfully. Hash: {}â€¦ | roots: {} | commands: {}",
+                        "Policy reloaded successfully. Hash: {}… | roots: {} | commands: {}",
                         &new_policy.policy_hash[..16],
                         new_policy.allowed_roots_canonical.len(),
                         new_policy.commands_by_id.len()
@@ -2263,9 +2263,9 @@ Notes
         };
         // Log response summary before sending
         if response.error.is_some() {
-            info!("âš ï¸  Processing '{}' -> ERROR", request.method);
+            info!("⚠️  Processing '{}' -> ERROR", request.method);
         } else {
-            info!("âœ¨ Processing '{}' -> SUCCESS", request.method);
+            info!("✨ Processing '{}' -> SUCCESS", request.method);
         }
         // Send response
         if let Err(e) = send_response(&response).await {

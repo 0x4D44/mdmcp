@@ -11,7 +11,7 @@
 //! - `run`: Send test JSON-RPC requests to the server for smoke testing
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 
 mod commands;
 mod io;
@@ -25,7 +25,7 @@ use commands::{doctor, install, policy};
 #[command(version = env!("CARGO_PKG_VERSION"))]
 struct Cli {
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
@@ -144,6 +144,8 @@ enum PolicyCommands {
         #[arg(long)]
         file: Option<String>,
     },
+    /// Reload policy by restarting the MCP client (Claude Desktop)
+    Reload,
     /// Add an allowed root directory
     AddRoot {
         /// Path to add as allowed root
@@ -211,7 +213,23 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Install {
+        None => {
+            // Print dynamic platform suffix and then standard help
+            let platform = if cfg!(target_os = "windows") {
+                "Windows".to_string()
+            } else if cfg!(target_os = "macos") {
+                "macOS".to_string()
+            } else if crate::io::is_wsl() {
+                "Linux/WSL".to_string()
+            } else {
+                "Linux".to_string()
+            };
+            println!("mdmcpcfg {} ({})\n", env!("CARGO_PKG_VERSION"), platform);
+            Cli::command().print_help().ok();
+            println!();
+            return Ok(());
+        }
+        Some(Commands::Install {
             dest,
             no_claude_config,
             server_target,
@@ -222,7 +240,7 @@ async fn main() -> Result<()> {
             local_path,
             insecure_skip_verify,
             verify_key,
-        } => {
+        }) => {
             install::run(
                 dest,
                 !no_claude_config,
@@ -237,17 +255,18 @@ async fn main() -> Result<()> {
             )
             .await
         }
-        Commands::Update {
+        Some(Commands::Update {
             channel,
             rollback,
             force,
             insecure_skip_verify,
             verify_key,
-        } => install::update(channel, rollback, force, insecure_skip_verify, verify_key).await,
-        Commands::Policy(policy_cmd) => match policy_cmd {
+        }) => install::update(channel, rollback, force, insecure_skip_verify, verify_key).await,
+        Some(Commands::Policy(policy_cmd)) => match policy_cmd {
             PolicyCommands::Show => policy::show().await,
             PolicyCommands::Edit => policy::edit().await,
             PolicyCommands::Validate { file } => policy::validate(file).await,
+            PolicyCommands::Reload => policy::reload().await,
             PolicyCommands::AddRoot { path, write } => policy::add_root(path, write).await,
             PolicyCommands::AddCommand {
                 id,
@@ -260,22 +279,22 @@ async fn main() -> Result<()> {
             PolicyCommands::ListEnv { id } => policy::list_env(id).await,
             PolicyCommands::SetExec { id, exec } => policy::set_exec(id, exec).await,
         },
-        Commands::Doctor => doctor::run().await,
-        Commands::Docs { build: _ } => docs::build().await,
-        Commands::Uninstall {
+        Some(Commands::Doctor) => doctor::run().await,
+        Some(Commands::Docs { build: _ }) => docs::build().await,
+        Some(Commands::Uninstall {
             remove_policy,
             remove_claude_config,
             yes,
-        } => install::uninstall(remove_policy, remove_claude_config, yes).await,
-        Commands::Run { jsonrpc_file } => {
+        }) => install::uninstall(remove_policy, remove_claude_config, yes).await,
+        Some(Commands::Run { jsonrpc_file }) => {
             // TODO: Implement run command for smoke testing
             println!("Running smoke test with {}", jsonrpc_file);
             Ok(())
         }
-        Commands::SelfUpgradeHelper { pid, orig, new } => {
+        Some(Commands::SelfUpgradeHelper { pid, orig, new }) => {
             // Delegate to self-update helper logic
             commands::install::run_self_upgrade_helper(pid, orig, new)
         }
-        Commands::SetExec { id, exec } => policy::set_exec(id, exec).await,
+        Some(Commands::SetExec { id, exec }) => policy::set_exec(id, exec).await,
     }
 }
