@@ -1,4 +1,4 @@
-//! # System diagnostics command
+﻿//! # System diagnostics command
 //!
 //! This module implements the doctor command that checks system health,
 //! configuration validity, and MCP server functionality.
@@ -9,10 +9,11 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 use crate::io::{is_executable, ClaudeDesktopConfig, Paths};
+use crate::commands::doctor_extra::{print_summary_clean, check_wsl_side};
 
 /// Run comprehensive system diagnostics
 pub async fn run() -> Result<()> {
-    println!("🩺 Running mdmcp system diagnostics...\n");
+    println!("🩺 Running mdmcp system diagnostics...\\n");
 
     let mut issues = Vec::new();
     let mut warnings = Vec::new();
@@ -26,6 +27,12 @@ pub async fn run() -> Result<()> {
     // Check Claude Desktop integration
     check_claude_desktop(&mut issues, &mut warnings).await?;
 
+    // If configured to launch via WSL, perform basic Linux-side checks (Windows only)
+    #[cfg(target_os = "windows")]
+    if let Err(e) = check_wsl_side(&mut warnings, &mut issues).await {
+        warnings.push(format!("WSL checks skipped: {}", e));
+    }
+
     // Check system dependencies
     check_system_dependencies(&mut issues, &mut warnings).await?;
 
@@ -33,20 +40,14 @@ pub async fn run() -> Result<()> {
     test_server_functionality(&mut issues, &mut warnings).await?;
 
     // Print summary
-    print_summary(&issues, &warnings);
+    print_summary_clean(&issues, &warnings);
 
     if issues.is_empty() && warnings.is_empty() {
         println!("🎉 All checks passed! Your mdmcp installation is healthy.");
     } else if issues.is_empty() {
-        println!(
-            "⚠️  Found {} warnings, but no critical issues.",
-            warnings.len()
-        );
+        println!("⚠️  Found {} warnings, but no critical issues.", warnings.len());
     } else {
-        println!(
-            "❌ Found {} critical issues that need attention.",
-            issues.len()
-        );
+        println!("❌ Found {} critical issues that need attention.", issues.len());
         if !warnings.is_empty() {
             println!("   Also found {} warnings.", warnings.len());
         }
@@ -102,10 +103,7 @@ async fn check_installation(issues: &mut Vec<String>, _warnings: &mut [String]) 
         }
     }
 
-    println!(
-        "   ✅ Binary found and executable: {}",
-        binary_path.display()
-    );
+    println!("   ✅ Binary found and executable: {}", binary_path.display());
 
     // Check installation info
     if let Ok(info_path) = paths.config_dir.join("install_info.json").canonicalize() {
@@ -135,10 +133,7 @@ async fn check_policy(issues: &mut Vec<String>, warnings: &mut Vec<String>) -> R
             "Policy file not found: {}",
             paths.policy_file.display()
         ));
-        println!(
-            "   ❌ Policy file not found: {}",
-            paths.policy_file.display()
-        );
+        println!("   ❌ Policy file not found: {}", paths.policy_file.display());
         return Ok(());
     }
 
@@ -194,9 +189,7 @@ async fn check_policy(issues: &mut Vec<String>, warnings: &mut Vec<String>) -> R
             }
         }
 
-        if accessible_count > 0 {
-            println!("   ✅ {} allowed roots are accessible", accessible_count);
-        }
+        if accessible_count > 0 { println!("   ✅ {} allowed roots are accessible", accessible_count); }
     }
 
     // Check commands
@@ -217,18 +210,13 @@ async fn check_policy(issues: &mut Vec<String>, warnings: &mut Vec<String>) -> R
                             "Command '{}' executable not found: {}",
                             cmd_id, exec
                         ));
-                        println!(
-                            "     ⚠️  Command '{}' executable not found: {}",
-                            cmd_id, exec
-                        );
+                        println!("     ⚠️  Command '{}' executable not found: {}", cmd_id, exec);
                     }
                 }
             }
         }
 
-        if valid_commands > 0 {
-            println!("   ✅ {} commands have valid executables", valid_commands);
-        }
+        if valid_commands > 0 { println!("   ✅ {} commands have valid executables", valid_commands); }
     }
 
     Ok(())
@@ -253,18 +241,12 @@ async fn check_claude_desktop(issues: &mut Vec<String>, warnings: &mut Vec<Strin
     if !claude_config_path.exists() {
         warnings
             .push("Claude Desktop config file not found - MCP server not configured".to_string());
-        println!(
-            "   ⚠️  Claude Desktop config not found: {}",
-            claude_config_path.display()
-        );
+        println!("   ⚠️  Claude Desktop config not found: {}", claude_config_path.display());
         println!("      Run 'mdmcpcfg install' to configure Claude Desktop integration");
         return Ok(());
     }
 
-    println!(
-        "   ✅ Claude Desktop config exists: {}",
-        claude_config_path.display()
-    );
+    println!("   ✅ Claude Desktop config exists: {}", claude_config_path.display());
 
     // Check if mdmcp is configured
     match ClaudeDesktopConfig::load_or_default() {
@@ -331,9 +313,7 @@ async fn check_system_dependencies(
         }
     }
 
-    if found_tools > 0 {
-        println!("   ✅ Found {} system tools", found_tools);
-    }
+    if found_tools > 0 { println!("   ✅ Found {} system tools", found_tools); }
 
     Ok(())
 }
@@ -379,7 +359,7 @@ async fn test_server_functionality(
         }
         Err(e) => {
             issues.push(format!("Cannot execute server binary: {}", e));
-            println!("   ❌ Cannot execute server binary: {}", e);
+            println!("   âŒ Cannot execute server binary: {}", e);
             return Ok(());
         }
     }
@@ -393,42 +373,7 @@ async fn test_server_functionality(
     Ok(())
 }
 
-/// Print diagnostic summary
-fn print_summary(issues: &[String], warnings: &[String]) {
-    println!("\n📊 Diagnostic Summary:");
-    println!("==================");
 
-    if !issues.is_empty() {
-        println!("\n❌ Critical Issues ({})", issues.len());
-        for (i, issue) in issues.iter().enumerate() {
-            println!("   {}. {}", i + 1, issue);
-        }
-    }
 
-    if !warnings.is_empty() {
-        println!("\n⚠️  Warnings ({})", warnings.len());
-        for (i, warning) in warnings.iter().enumerate() {
-            println!("   {}. {}", i + 1, warning);
-        }
-    }
 
-    if !issues.is_empty() || !warnings.is_empty() {
-        println!("\n💡 Recommended Actions:");
-        if issues.iter().any(|i| i.contains("Binary not found")) {
-            println!("   • Run 'mdmcpcfg install' to install the MCP server binary");
-        }
-        if issues.iter().any(|i| i.contains("Policy file not found")) {
-            println!("   • Run 'mdmcpcfg install' to create a default policy file");
-        }
-        if warnings.iter().any(|w| w.contains("Claude Desktop")) {
-            println!("   • Run 'mdmcpcfg install' to configure Claude Desktop integration");
-        }
-        if warnings.iter().any(|w| w.contains("not accessible")) {
-            println!("   • Review allowed roots in policy file with 'mdmcpcfg policy show'");
-            println!("   • Remove inaccessible paths or create missing directories");
-        }
-        if warnings.iter().any(|w| w.contains("executable not found")) {
-            println!("   • Install missing system tools or update command paths in policy");
-        }
-    }
-}
+

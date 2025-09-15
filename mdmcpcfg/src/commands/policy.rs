@@ -1,4 +1,4 @@
-//! # Policy management commands
+﻿//! # Policy management commands
 //!
 //! This module handles policy file operations including display, editing, validation,
 //! and modification of policy configurations.
@@ -17,12 +17,11 @@ pub async fn show() -> Result<()> {
     let paths = Paths::new()?;
 
     if !paths.policy_file.exists() {
-        println!("❌ Policy file not found: {}", paths.policy_file.display());
-        println!("💡 Run 'mdmcpcfg install' to create a default policy");
+        println!("ERROR: Policy file not found: {}", paths.policy_file.display());
+        println!("HINT: Run 'mdmcpcfg install' to create a default policy");
         return Ok(());
     }
-
-    println!("📋 Current policy configuration:");
+    println!("INFO: Current policy configuration:");
     println!("   File: {}", paths.policy_file.display());
     println!();
 
@@ -45,8 +44,8 @@ pub async fn edit() -> Result<()> {
     let paths = Paths::new()?;
 
     if !paths.policy_file.exists() {
-        println!("❌ Policy file not found: {}", paths.policy_file.display());
-        println!("💡 Run 'mdmcpcfg install' to create a default policy");
+        println!("ERROR: Policy file not found: {}", paths.policy_file.display());
+        println!("HINT: Run 'mdmcpcfg install' to create a default policy");
         return Ok(());
     }
 
@@ -57,7 +56,7 @@ pub async fn edit() -> Result<()> {
             .or_else(|_| which::which("Code.exe"))
         {
             println!(
-                "📝 Opening user and core policies in VS Code: {}, {}",
+                "ðŸ“ Opening user and core policies in VS Code: {}, {}",
                 paths.policy_file.display(),
                 paths.core_policy_file.display()
             );
@@ -71,13 +70,13 @@ pub async fn edit() -> Result<()> {
                 .status()
                 .context("Failed to launch VS Code")?;
             if !status.success() {
-                println!("⚠️  VS Code exited with non-zero status; falling back to single-file editor for user policy.");
+                println!("âš ï¸  VS Code exited with non-zero status; falling back to single-file editor for user policy.");
                 open_single_file_editor(&paths.policy_file)?;
             }
         } else {
             // Fall back to opening core (read-only) then user overlay
             println!(
-                "📄 Opening core policy (read-only) for reference: {}",
+                "ðŸ“„ Opening core policy (read-only) for reference: {}",
                 paths.core_policy_file.display()
             );
             edit::edit_file(&paths.core_policy_file).with_context(|| {
@@ -88,7 +87,7 @@ pub async fn edit() -> Result<()> {
             })?;
 
             println!(
-                "✏️  Opening user policy overlay in editor: {}",
+                "✓ Opening user policy overlay in editor: {}",
                 paths.policy_file.display()
             );
             open_single_file_editor(&paths.policy_file)?;
@@ -96,16 +95,16 @@ pub async fn edit() -> Result<()> {
     } else {
         // No core policy; just open user overlay
         println!(
-            "✏️  Opening user policy overlay in editor: {}",
+            "✓ Opening user policy overlay in editor: {}",
             paths.policy_file.display()
         );
         open_single_file_editor(&paths.policy_file)?;
     }
 
-    println!("✅ User policy edited");
+    println!("✓ User policy edited");
 
     // Validate after editing
-    println!("🔍 Validating edited policy...");
+    println!("INFO: Validating edited policy...");
     // Validate the merged policy (core + user) if core exists
     if paths.core_policy_file.exists() {
         validate_merged(&paths).await?;
@@ -114,10 +113,10 @@ pub async fn edit() -> Result<()> {
     }
 
     // Auto-generate documentation cache (non-blocking semantics)
-    println!("🧱 Building documentation cache...");
+    println!("INFO: Building documentation cache...");
     match docs::build().await {
-        Ok(()) => println!("✅ Documentation cache built"),
-        Err(e) => println!("⚠️  Failed to build documentation cache: {}", e),
+        Ok(()) => println!("✓ Documentation cache built"),
+        Err(e) => println!("âš ï¸  Failed to build documentation cache: {}", e),
     }
 
     Ok(())
@@ -142,7 +141,7 @@ pub async fn validate(file_path: Option<String>) -> Result<()> {
         bail!("Policy file not found: {}", policy_file.display());
     }
 
-    println!("🔍 Validating policy file: {}", policy_file.display());
+    println!("ðŸ” Validating policy file: {}", policy_file.display());
 
     let content = read_file(&policy_file)?;
 
@@ -152,15 +151,75 @@ pub async fn validate(file_path: Option<String>) -> Result<()> {
     // Basic validation
     validate_policy_structure(&policy)?;
 
-    println!("✅ Policy file is valid");
+    println!("âœ… Policy file is valid");
     print_policy_summary(&policy)?;
+
+    Ok(())
+}
+
+/// Upsert a command's exec path: update if present, else add a minimal entry
+pub async fn set_exec(id: String, exec: String) -> Result<()> {
+    let paths = Paths::new()?;
+    if !paths.policy_file.exists() {
+        bail!(
+            "Policy file not found: {}. Run 'mdmcpcfg install' first.",
+            paths.policy_file.display()
+        );
+    }
+    let content = read_file(&paths.policy_file)?;
+    let mut policy: Value = serde_yaml::from_str(&content).context("Failed to parse policy file")?;
+
+    let commands = policy
+        .get_mut("commands")
+        .and_then(|v| v.as_sequence_mut())
+        .context("Policy file missing or invalid 'commands' section")?;
+
+    let mut found = false;
+    for cmd in commands.iter_mut() {
+        if cmd.get("id").and_then(|i| i.as_str()) == Some(id.as_str()) {
+            if let Some(map) = cmd.as_mapping_mut() {
+                map.insert(Value::String("exec".into()), Value::String(exec.clone()));
+                found = true;
+                break;
+            }
+        }
+    }
+
+    if !found {
+        // Build a minimal command entry
+        let mut command = Mapping::new();
+        command.insert(Value::String("id".into()), Value::String(id.clone()));
+        command.insert(Value::String("exec".into()), Value::String(exec.clone()));
+        command.insert(Value::String("cwd_policy".into()), Value::String("within_root".into()));
+        command.insert(Value::String("env_allowlist".into()), Value::Sequence(vec![]));
+        command.insert(Value::String("timeout_ms".into()), Value::Number(20000.into()));
+        command.insert(Value::String("max_output_bytes".into()), Value::Number(2_000_000.into()));
+        command.insert(Value::String("allow_any_args".into()), Value::Bool(true));
+        let platforms = if cfg!(target_os = "windows") {
+            vec![Value::String("windows".into())]
+        } else if cfg!(target_os = "macos") {
+            vec![Value::String("macos".into())]
+        } else {
+            vec![Value::String("linux".into())]
+        };
+        command.insert(Value::String("platform".into()), Value::Sequence(platforms));
+        commands.push(Value::Mapping(command));
+        println!("✓ Added command '{}' to policy", id);
+    } else {
+        println!("✓ Updated exec for command '{}'", id);
+    }
+
+    let updated = serde_yaml::to_string(&policy).context("Failed to serialize updated policy")?;
+    write_file(&paths.policy_file, &updated)?;
+    // Suppress noisy per-command doc rebuild; caller can rebuild once at end
+    // println!("✓ Policy file updated: {}", paths.policy_file.display());
 
     Ok(())
 }
 
 /// Validate merged core + user policies by compiling via mdmcp_policy
 async fn validate_merged(paths: &Paths) -> Result<()> {
-    println!("🔍 Validating merged policy (core + user)...");
+    println!("ðŸ” Validating merged policy (core + user)...");
     let user_content = read_file(&paths.policy_file)?;
     let core_content = read_file(&paths.core_policy_file)?;
 
@@ -174,7 +233,7 @@ async fn validate_merged(paths: &Paths) -> Result<()> {
         .compile()
         .context("Merged policy failed to compile (check allowed_roots, commands, write_rules)")?;
 
-    println!("✅ Merged policy is valid");
+    println!("âœ… Merged policy is valid");
     Ok(())
 }
 
@@ -202,9 +261,9 @@ pub async fn add_root(path: String, enable_write: bool) -> Result<()> {
     let new_root = Value::String(path.clone());
     if !allowed_roots.contains(&new_root) {
         allowed_roots.push(new_root);
-        println!("✅ Added allowed root: {}", path);
+        println!("âœ… Added allowed root: {}", path);
     } else {
-        println!("ℹ️  Root already exists: {}", path);
+        println!("â„¹ï¸  Root already exists: {}", path);
     }
 
     // Add to write_rules if requested
@@ -232,9 +291,9 @@ pub async fn add_root(path: String, enable_write: bool) -> Result<()> {
 
         if !path_exists {
             write_rules.push(new_write_rule);
-            println!("✅ Added write rule for: {}", path);
+            println!("âœ… Added write rule for: {}", path);
         } else {
-            println!("ℹ️  Write rule already exists for: {}", path);
+            println!("â„¹ï¸  Write rule already exists for: {}", path);
         }
     }
 
@@ -243,7 +302,7 @@ pub async fn add_root(path: String, enable_write: bool) -> Result<()> {
         serde_yaml::to_string(&policy).context("Failed to serialize updated policy")?;
 
     write_file(&paths.policy_file, &updated_content)?;
-    println!("💾 Policy file updated: {}", paths.policy_file.display());
+    println!("✓ Policy file updated: {}", paths.policy_file.display());
 
     Ok(())
 }
@@ -356,14 +415,14 @@ pub async fn add_command(
 
     write_file(&paths.policy_file, &updated_content)?;
 
-    println!("✅ Added command '{}' to policy", id);
-    println!("💾 Policy file updated: {}", paths.policy_file.display());
+    println!("âœ… Added command '{}' to policy", id);
+    println!("✓ Policy file updated: {}", paths.policy_file.display());
 
     // Auto-generate documentation cache (non-blocking semantics)
-    println!("🧱 Building documentation cache...");
+    println!("INFO: Building documentation cache...");
     match docs::build().await {
-        Ok(()) => println!("✅ Documentation cache built"),
-        Err(e) => println!("⚠️  Failed to build documentation cache: {}", e),
+        Ok(()) => println!("✓ Documentation cache built"),
+        Err(e) => println!("âš ï¸  Failed to build documentation cache: {}", e),
     }
 
     Ok(())
@@ -416,7 +475,7 @@ pub async fn set_env(id: String, kv: Vec<String>) -> Result<()> {
 
     let updated = serde_yaml::to_string(&policy).context("Failed to serialize updated policy")?;
     write_file(&paths.policy_file, &updated)?;
-    println!("✅ Updated env_static for command '{}'", id);
+    println!("âœ… Updated env_static for command '{}'", id);
     Ok(())
 }
 
@@ -456,7 +515,7 @@ pub async fn unset_env(id: String, names: Vec<String>) -> Result<()> {
     }
     let updated = serde_yaml::to_string(&policy).context("Failed to serialize updated policy")?;
     write_file(&paths.policy_file, &updated)?;
-    println!("✅ Removed env_static entries for '{}'", id);
+    println!("âœ… Removed env_static entries for '{}'", id);
     Ok(())
 }
 
@@ -501,7 +560,7 @@ pub async fn list_env(id: String) -> Result<()> {
 
 /// Print a summary of the policy configuration
 fn print_policy_summary(policy: &Value) -> Result<()> {
-    println!("📊 Policy Summary:");
+    println!("ðŸ“Š Policy Summary:");
 
     // Version
     if let Some(version) = policy.get("version").and_then(|v| v.as_i64()) {
@@ -631,9 +690,9 @@ fn validate_policy_structure(policy: &Value) -> Result<()> {
             .with_context(|| format!("Command {}: 'exec' must be a string", cmd_id))?;
     }
 
-    println!("   ✅ Policy structure is valid");
-    println!("   ✅ Found {} allowed roots", allowed_roots.len());
-    println!("   ✅ Found {} commands", commands.len());
+    println!("   âœ… Policy structure is valid");
+    println!("   âœ… Found {} allowed roots", allowed_roots.len());
+    println!("   âœ… Found {} commands", commands.len());
 
     Ok(())
 }

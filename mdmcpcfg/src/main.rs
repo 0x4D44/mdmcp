@@ -36,8 +36,20 @@ enum Commands {
         #[arg(long)]
         dest: Option<String>,
         /// Skip Claude Desktop configuration
-        #[arg(long)]
+        #[arg(long, alias = "no-claude")]
         no_claude_config: bool,
+        /// Server target when WSL is available: windows | linux | auto
+        #[arg(long, default_value = "auto")]
+        server_target: String,
+        /// Install plugins (yes|no). Default: yes
+        #[arg(long)]
+        plugins: Option<String>,
+        /// WSL distro name to target when installing Linux server
+        #[arg(long)]
+        wsl_distro: Option<String>,
+        /// Accept defaults and skip interactive prompts
+        #[arg(long, short = 'y')]
+        yes: bool,
         /// Install from local binary instead of downloading
         #[arg(long)]
         local: bool,
@@ -110,6 +122,14 @@ enum Commands {
         /// JSON-RPC file to send
         jsonrpc_file: String,
     },
+    /// Upsert a command's exec path (update if exists, add minimal if missing)
+    SetExec {
+        /// Command ID
+        id: String,
+        /// Executable path
+        #[arg(long)]
+        exec: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -167,16 +187,37 @@ enum PolicyCommands {
         /// Command ID
         id: String,
     },
+    /// Upsert a command's exec path (update if exists, add minimal if missing)
+    SetExec {
+        /// Command ID
+        id: String,
+        /// Executable path
+        #[arg(long)]
+        exec: String,
+    },
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // On Windows, switch console code pages to UTF-8 so emojis render correctly.
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::System::Console::{SetConsoleCP, SetConsoleOutputCP};
+        const CP_UTF8: u32 = 65001;
+        let _ = SetConsoleOutputCP(CP_UTF8);
+        let _ = SetConsoleCP(CP_UTF8);
+    }
+
     let cli = Cli::parse();
 
     match cli.command {
         Commands::Install {
             dest,
             no_claude_config,
+            server_target,
+            plugins,
+            wsl_distro,
+            yes,
             local,
             local_path,
             insecure_skip_verify,
@@ -185,6 +226,10 @@ async fn main() -> Result<()> {
             install::run(
                 dest,
                 !no_claude_config,
+                server_target,
+                plugins,
+                wsl_distro,
+                yes,
                 local,
                 local_path,
                 insecure_skip_verify,
@@ -213,6 +258,7 @@ async fn main() -> Result<()> {
             PolicyCommands::SetEnv { id, kv } => policy::set_env(id, kv).await,
             PolicyCommands::UnsetEnv { id, names } => policy::unset_env(id, names).await,
             PolicyCommands::ListEnv { id } => policy::list_env(id).await,
+            PolicyCommands::SetExec { id, exec } => policy::set_exec(id, exec).await,
         },
         Commands::Doctor => doctor::run().await,
         Commands::Docs { build: _ } => docs::build().await,
@@ -230,5 +276,6 @@ async fn main() -> Result<()> {
             // Delegate to self-update helper logic
             commands::install::run_self_upgrade_helper(pid, orig, new)
         }
+        Commands::SetExec { id, exec } => policy::set_exec(id, exec).await,
     }
 }

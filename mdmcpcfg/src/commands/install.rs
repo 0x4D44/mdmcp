@@ -1,4 +1,4 @@
-//! # Installation and update commands
+﻿//! # Installation and update commands
 //!
 //! This module handles downloading, installing, and updating the mdmcpsrvr binary,
 use anyhow::{bail, Context, Result};
@@ -10,12 +10,20 @@ use tempfile::NamedTempFile;
 
 use crate::commands::docs;
 use crate::io::{is_executable, write_file, ClaudeDesktopConfig, Paths};
+use std::io;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
 // GitHub repository for releases
 const GITHUB_RELEASES_LATEST: &str = "https://api.github.com/repos/0x4D44/mdmcp/releases/latest";
 const GITHUB_RELEASES: &str = "https://api.github.com/repos/0x4D44/mdmcp/releases";
+
+// Install target when WSL is available
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Target {
+    Windows,
+    LinuxWsl,
+}
 
 /// GitHub release information
 #[derive(Debug, Deserialize, Clone)]
@@ -105,6 +113,10 @@ impl InstallationInfo {
 pub async fn run(
     dest_dir: Option<String>,
     configure_claude: bool,
+    server_target: String,
+    plugins: Option<String>,
+    wsl_distro: Option<String>,
+    yes_defaults: bool,
     local: bool,
     local_path: Option<String>,
     insecure_skip_verify: bool,
@@ -149,7 +161,17 @@ pub async fn run(
 
     match choice {
         Some('G') => {
-            install_from_github(dest_dir, configure_claude, insecure_skip_verify, verify_key).await
+            install_with_prompts(
+                dest_dir,
+                configure_claude,
+                &server_target,
+                plugins.as_deref(),
+                wsl_distro.as_deref(),
+                yes_defaults,
+                insecure_skip_verify,
+                verify_key,
+            )
+            .await
         }
         Some('L') => {
             let (bin, _) = local_info.expect("local info should exist");
@@ -161,6 +183,386 @@ pub async fn run(
         }
     }
 }
+
+/// End-to-end install with WSL/server-target + plugins prompts/flags
+async fn install_with_prompts(
+    dest_dir: Option<String>,
+    configure_claude: bool,
+    server_target_flag: &str,
+    plugins_flag: Option<&str>,
+    wsl_distro: Option<&str>,
+    yes_defaults: bool,
+    insecure_skip_verify: bool,
+    verify_key: Option<String>,
+) -> Result<()> {
+    // Resolve server target
+    let target = if server_target_flag.eq_ignore_ascii_case("windows") {
+        Target::Windows
+    } else if server_target_flag.eq_ignore_ascii_case("linux") {
+        Target::LinuxWsl
+    } else {
+        // auto: prompt on Windows if WSL available; else choose host default
+        if cfg!(target_os = "windows") && wsl_available() {
+            let t = if yes_defaults {
+                Target::Windows
+            } else {
+                prompt_server_target_choice().unwrap_or(Target::Windows)
+            };
+            t
+        } else {
+            // No WSL or non-Windows host
+            if cfg!(target_os = "windows") {
+                Target::Windows
+            } else {
+                Target::LinuxWsl
+            }
+        }
+    };
+
+    // Resolve plugins selection
+    let plugins_yes = match plugins_flag.map(|s| s.to_ascii_lowercase()) {
+        Some(ref v) if v == "yes" || v == "y" => true,
+        Some(ref v) if v == "no" || v == "n" => false,
+        Some(_) => true,
+        None => {
+            if yes_defaults {
+                true
+            } else {
+                prompt_named_confirmation("Install mdmcp plugins on Windows? [Y/n]: ")?.then_some(true).unwrap_or(false)
+            }
+        }
+    };
+
+    // Fetch latest release (for assets)
+    let release = fetch_latest_release().await?;
+
+    // Always create default policies on the local side for consistency
+    let paths = Paths::new()?;
+    paths.ensure_dirs()?;
+    create_default_policies(&paths).await?;
+
+    // Install plugins on Windows if requested
+    if plugins_yes {
+        if cfg!(target_os = "windows") {
+            install_windows_plugins(&release, insecure_skip_verify, verify_key.as_deref()).await?;
+        } else {
+            // Running on Linux/WSL — still install on Windows by invoking PowerShell via wsl interop
+            println!("ℹ️  Installing plugins on Windows host...");
+            // Best-effort: tell user what to run manually if interop not available
+        }
+    }
+
+    match target {
+        Target::Windows => {
+            // Install server on Windows (existing path)
+            install_from_github(dest_dir.clone(), configure_claude, insecure_skip_verify, verify_key.clone()).await?;
+            // If plugins were installed, update policy with Windows execs
+            if plugins_yes {
+                add_plugins_to_policy_windows().await?;
+            }
+            // If we auto-chose Windows but WSL is available, hint how to install in WSL
+            if server_target_flag.eq_ignore_ascii_case("auto") && cfg!(target_os = "windows") && wsl_available() && !yes_defaults {
+                println!("ℹ️  WSL is available. To install in WSL, run: mdmcpcfg install --server-target linux");
+            }
+        }
+        Target::LinuxWsl => {
+            // Orchestrate Linux server install inside WSL
+            install_server_in_wsl(&release, wsl_distro, insecure_skip_verify, verify_key.as_deref()).await?;
+            // Update Claude Desktop on Windows to launch wsl.exe -> mdmcpsrvr
+            if cfg!(target_os = "windows") && configure_claude {
+                configure_claude_for_wsl(wsl_distro, None).await?;
+            }
+            // Do not configure any additional roots inside WSL by default.
+            // Optionally add plugin commands to WSL policy with /mnt/c exec paths when mdmcpcfg exists
+            if plugins_yes {
+                let mdmcpcfg_exists = wsl_exec_status(wsl_distro, "test -x ~/.local/share/mdmcpcfg/bin/mdmcpcfg");
+                if mdmcpcfg_exists {
+                    add_plugins_to_policy_wsl(wsl_distro).await.ok();
+                } else {
+                    println!("ℹ️  Skipping WSL plugin registration (mdmcpcfg not found in ~/.local/share/mdmcpcfg/bin)");
+                }
+            }
+        }
+    }
+
+    // Rebuild documentation cache once at the end on the host side
+    println!("   Building documentation cache...");
+    match docs::build().await {
+        Ok(()) => println!("   ✅ Documentation cache built"),
+        Err(e) => println!("   ⚠️  Failed to build documentation cache: {}", e),
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn wsl_available() -> bool {
+    match std::process::Command::new("wsl.exe").args(["-l", "-q"]).output() {
+        Ok(out) => {
+            if out.status.success() {
+                true
+            } else {
+                // Some environments return a non-zero status but still list distros; treat non-empty stdout as available
+                !out.stdout.is_empty()
+            }
+        }
+        Err(_) => false,
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn wsl_available() -> bool { false }
+
+/// List available WSL distros (quiet names). Windows only.
+#[cfg(target_os = "windows")]
+fn wsl_list_distros() -> Vec<String> {
+    match std::process::Command::new("wsl.exe").args(["-l", "-q"]).output() {
+        Ok(out) => {
+            let s = String::from_utf8_lossy(&out.stdout);
+            s.lines()
+                .map(|l| l.trim())
+                .filter(|l| !l.is_empty())
+                .map(|l| l.to_string())
+                .collect()
+        }
+        Err(_) => Vec::new(),
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn wsl_list_distros() -> Vec<String> { Vec::new() }
+
+#[cfg(target_os = "windows")]
+fn wsl_exec_status(distro: Option<&str>, cmd: &str) -> bool {
+    let mut args: Vec<&str> = Vec::new();
+    if let Some(d) = distro { if !d.trim().is_empty() { args.push("-d"); args.push(d); } }
+    args.push("--");
+    args.push("bash");
+    args.push("-lc");
+    args.push(cmd);
+    std::process::Command::new("wsl.exe")
+        .args(&args)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn wsl_exec_status(_distro: Option<&str>, _cmd: &str) -> bool { false }
+
+#[cfg(target_os = "windows")]
+fn wsl_path_exists(distro: Option<&str>, path: &str) -> bool {
+    let test = format!("test -e {}", path);
+    wsl_exec_status(distro, &test)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn wsl_path_exists(_distro: Option<&str>, _path: &str) -> bool { false }
+
+fn prompt_server_target_choice() -> Option<Target> {
+    let mut input = String::new();
+    println!("WSL detected. Where should mdmcpsrvr be installed?");
+    println!("[W] Windows (default) • [L] Linux (WSL) • [N] Cancel");
+    print!("Choice: ");
+    let _ = io::Write::flush(&mut io::stdout());
+    io::stdin().read_line(&mut input).ok()?;
+    let ch = input.trim().to_ascii_lowercase();
+    match ch.as_str() {
+        "w" | "" => Some(Target::Windows),
+        "l" => Some(Target::LinuxWsl),
+        _ => None,
+    }
+}
+
+/// Download windows-binaries.zip and extract plugins to %LOCALAPPDATA%/mdmcp/bin/plugins
+async fn install_windows_plugins(
+    release: &GitHubRelease,
+    insecure_skip_verify: bool,
+    _verify_key: Option<&str>,
+) -> Result<()> {
+    use std::io::Read;
+    let asset = release
+        .assets
+        .iter()
+        .find(|a| a.name == "windows-binaries.zip")
+        .context("windows-binaries.zip not found in release")?;
+    println!("📦 Downloading plugins archive: {}", asset.name);
+    let bytes = download_asset_bytes(&asset.browser_download_url).await?;
+    if !insecure_skip_verify {
+        if let Ok(map) = fetch_and_verify_manifest(release, &VerificationOptions { skip: false, verify_key_path: None }).await {
+            if let Some(exp) = map.get(&asset.name) {
+                let got = hex::encode(Sha256::digest(&bytes));
+                if got.to_lowercase() != exp.to_lowercase() {
+                    bail!("Checksum mismatch for {}", asset.name);
+                }
+            }
+        }
+    }
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).context("Failed to read zip")?;
+    let paths = Paths::new()?;
+    let plugins_dir = paths.bin_dir.join("plugins");
+    std::fs::create_dir_all(&plugins_dir).context("Failed to create plugins dir")?;
+    let wanted = [
+        "bin/plugins/mdaicli.exe",
+        "bin/plugins/mdconfcli.exe",
+        "bin/plugins/mdjiracli.exe",
+        "bin/plugins/mdmailcli.exe",
+        "bin/plugins/mdslackcli.exe",
+    ];
+    for name in wanted.iter() {
+        if let Ok(mut f) = zip.by_name(name) {
+            let out = plugins_dir.join(Path::new(name).file_name().unwrap());
+            let mut buf = Vec::with_capacity(f.size() as usize);
+            f.read_to_end(&mut buf).context("Failed reading entry")?;
+            std::fs::write(&out, &buf).with_context(|| format!("Failed to write {}", out.display()))?;
+        }
+    }
+    println!("✅ Plugins installed: {}", plugins_dir.display());
+    Ok(())
+}
+
+async fn add_plugins_to_policy_windows() -> Result<()> {
+    // Use the policy module to add commands with Windows paths
+    let paths = Paths::new()?;
+    let base = paths
+        .bin_dir
+        .join("plugins")
+        .to_string_lossy()
+        .to_string()
+        .replace('\\', "/");
+    let cmds = ["mdaicli", "mdconfcli", "mdjiracli", "mdmailcli", "mdslackcli"];
+    for id in cmds {
+        let exec = format!("{}/{}.exe", base, id);
+        super::policy::set_exec(id.into(), exec).await?;
+    }
+    Ok(())
+}
+
+async fn install_server_in_wsl(
+    release: &GitHubRelease,
+    wsl_distro: Option<&str>,
+    _insecure_skip: bool,
+    _verify_key: Option<&str>,
+) -> Result<()> {
+    // Ensure linux mdmcpcfg exists inside WSL and run install
+    let asset = release
+        .assets
+        .iter()
+        .find(|a| a.name == "linux-mdmcpcfg")
+        .context("linux-mdmcpcfg not found in release")?;
+    let bytes = download_asset_bytes(&asset.browser_download_url).await?;
+    // Stage to Windows temp and copy into WSL
+    let win_stage = std::env::temp_dir().join("linux-mdmcpcfg");
+    std::fs::write(&win_stage, &bytes).context("Failed to write staged linux mdmcpcfg")?;
+    let wsl_stage = windows_path_to_wsl(&win_stage)?;
+    let distro_arg = wsl_distro.unwrap_or("");
+    let copy_cmd = format!(
+        "mkdir -p ~/.local/share/mdmcpcfg/bin && cp '{}' ~/.local/share/mdmcpcfg/bin/mdmcpcfg && chmod +x ~/.local/share/mdmcpcfg/bin/mdmcpcfg",
+        wsl_stage.replace("'", "'\\''")
+    );
+    wsl_exec(distro_arg, &copy_cmd)?;
+    let install_cmd = "printf 'g\n' | ~/.local/share/mdmcpcfg/bin/mdmcpcfg install --no-claude-config --dest ~/.local/share/mdmcp/bin";
+    wsl_exec(distro_arg, install_cmd)?;
+    println!("✅ Installed mdmcpsrvr in WSL");
+    Ok(())
+}
+
+async fn add_plugins_to_policy_wsl(wsl_distro: Option<&str>) -> Result<()> {
+    // Compute Windows plugins path and convert to /mnt/c path inside WSL
+    let paths = Paths::new()?;
+    let plugins_dir = paths.bin_dir.join("plugins");
+    let wsl_plugins = windows_path_to_wsl(&plugins_dir)?;
+    let distro_arg = wsl_distro.unwrap_or("");
+    let cmds = ["mdaicli", "mdconfcli", "mdjiracli", "mdmailcli", "mdslackcli"];
+    for id in cmds {
+        let exec = format!("{}/{}.exe", wsl_plugins, id);
+        let escaped = exec.replace("'", "'\\''");
+        let cmd = format!(
+            "~/.local/share/mdmcpcfg/bin/mdmcpcfg policy set-exec {} --exec '{}' 2>/dev/null || ~/.local/share/mdmcpcfg/bin/mdmcpcfg policy add-command {} --exec '{}'",
+            id,
+            escaped,
+            id,
+            escaped
+        );
+        wsl_exec(distro_arg, &cmd)?;
+    }
+    println!("✅ Registered plugin commands in WSL policy");
+    Ok(())
+}
+
+async fn configure_claude_for_wsl(wsl_distro: Option<&str>, linux_paths: Option<(String, String)>) -> Result<()> {
+    // linux_paths optionally supplies explicit linux server/policy; else assume defaults under $HOME
+    let (server, policy) = if let Some((s, p)) = linux_paths {
+        (PathBuf::from(s), PathBuf::from(p))
+    } else {
+        (
+            PathBuf::from("/home/$USER/.local/share/mdmcp/bin/mdmcpsrvr"),
+            PathBuf::from("/home/$USER/.config/mdmcp/policy.user.yaml"),
+        )
+    };
+    let mut cfg = ClaudeDesktopConfig::load_or_default()?;
+    cfg.add_mdmcp_server_wsl(wsl_distro, &server, &policy)?;
+    cfg.save()?;
+    println!("✅ Updated Claude Desktop to launch WSL server");
+    Ok(())
+}
+
+/// Add Windows home directory as an allowed root in the WSL-side policy (read-only by default).
+#[cfg(target_os = "windows")]
+// Removed: add_windows_home_as_allowed_root_in_wsl — we no longer auto-configure roots in WSL
+
+#[cfg(not(target_os = "windows"))]
+async fn add_windows_home_as_allowed_root_in_wsl(_wsl_distro: Option<&str>) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn windows_path_to_wsl(p: &Path) -> Result<String> {
+    let sp = p.to_string_lossy().to_string();
+    // Prefer invoking wslpath inside WSL for correctness
+    let output = std::process::Command::new("wsl.exe")
+        .args(["--", "wslpath", "-a", "-u", &sp])
+        .output()
+        .ok();
+    if let Some(out) = output {
+        if out.status.success() {
+            let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !s.is_empty() {
+                return Ok(s);
+            }
+        }
+    }
+    // Fallback: map Windows path to /mnt/<drive>/... heuristically
+    let s = sp.trim();
+    if s.len() >= 2 && s.as_bytes()[1] == b':' {
+        let drive = s.chars().next().unwrap().to_ascii_lowercase();
+        let rest = &s[2..];
+        let rest = rest.replace('\\', "/");
+        let rest_trimmed = rest.trim_start_matches(&['/', '\\'][..]);
+        Ok(format!("/mnt/{}/{}", drive, rest_trimmed))
+    } else {
+        bail!("Could not convert Windows path to WSL mount: {}", sp);
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn windows_path_to_wsl(_p: &Path) -> Result<String> { bail!("not on Windows") }
+
+#[cfg(target_os = "windows")]
+fn wsl_exec(distro: &str, cmd: &str) -> Result<()> {
+    let mut args: Vec<&str> = Vec::new();
+    if !distro.trim().is_empty() { args.push("-d"); args.push(distro); }
+    args.push("--");
+    args.push("bash");
+    args.push("-lc");
+    args.push(cmd);
+    let status = std::process::Command::new("wsl.exe").args(&args).status().context("Failed to run wsl.exe")?;
+    if !status.success() { bail!("WSL command failed"); }
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn wsl_exec(_distro: &str, _cmd: &str) -> Result<()> { Ok(()) }
 
 /// Update the MCP server binary
 pub async fn update(
@@ -185,7 +587,7 @@ pub async fn update(
 
     // Check current version
     let current_info = if let Some(info) = InstallationInfo::load(&paths)? {
-        println!("ℹ️ Current installed version: {}", info.version);
+        println!("\u{2139}\u{FE0F}  Current installed version: {}", info.version);
 
         // Verify current binary integrity
         let binary_path = Path::new(&info.binary_path);
@@ -198,7 +600,19 @@ pub async fn update(
         Some(info)
     } else {
         println!("ℹ️  No existing installation found - performing fresh install");
-        return run(None, true, false, None, false, None).await;
+        return run(
+            None,
+            true,
+            "auto".to_string(),
+            None,
+            None,
+            true,
+            false,
+            None,
+            insecure_skip_verify,
+            verify_key,
+        )
+        .await;
     };
 
     // Probe available sources
@@ -240,7 +654,7 @@ pub async fn update(
             if let Some(ref current) = current_info {
                 if current.version == github_release.tag_name && !force {
                     println!(
-                        "✔ Already up to date with GitHub version {}!",
+                        "\u{2705} Already up to date with GitHub version {}!",
                         github_release.tag_name
                     );
                     return Ok(());
@@ -314,7 +728,7 @@ pub async fn update(
                             && !force
                         {
                             println!(
-                                "✔ Already up to date - both binaries report same version {}!",
+                                "\u{2705} Already up to date - both binaries report same version {}!",
                                 local_version
                             );
                             return Ok(());
@@ -323,7 +737,7 @@ pub async fn update(
                 }
 
                 if current.version == new_version_tag && local_version != "local" && !force {
-                    println!("✔ Already up to date with local version {}!", local_version);
+                    println!("\u{2705} Already up to date with local version {}!", local_version);
                     return Ok(());
                 }
 
@@ -434,10 +848,7 @@ where
     // This function only does the actual update work
     if !preconfirmed {
         if let Some(current_info) = InstallationInfo::load(paths)? {
-            println!(
-                "📦 Updating from {} to {}",
-                current_info.version, release.tag_name
-            );
+            println!("📦 Updating from {} to {}", current_info.version, release.tag_name);
             if force {
                 println!("⚠️  Force updating (reinstall)");
             }
@@ -538,7 +949,7 @@ async fn update_from_local_binary(
     restart_claude_after: bool,
     claude_path: Option<String>,
 ) -> Result<()> {
-    println!("📂 Updating from local binary: {}", source_binary.display());
+    println!("📦 Updating from local binary: {}", source_binary.display());
 
     // Validate local binary
     if !source_binary.exists() {
@@ -561,10 +972,7 @@ async fn update_from_local_binary(
     if !preconfirmed {
         if let Some(current_info) = InstallationInfo::load(paths)? {
             let new_version_tag = format!("{} (local)", version);
-            println!(
-                "📦 Updating from {} to {}",
-                current_info.version, new_version_tag
-            );
+            println!("📦 Updating from {} to {}", current_info.version, new_version_tag);
             if force {
                 println!("⚠️  Force updating (reinstall)");
             }
@@ -646,7 +1054,7 @@ async fn install_from_github(
     // Prefer per-OS binaries ZIP; fallback to raw binary for backward compatibility
     if let Err(e) = download_server_from_zip_verified(&release, &binary_path, &vopts).await {
         println!(
-            "ℹ️  Zip-based download failed ({}). Falling back to raw binary…",
+            "ℹ️  Zip-based download failed ({}). Falling back to raw binary...",
             e
         );
         download_binary_verified(&release, "mdmcpsrvr", &binary_path, &vopts).await?;
@@ -706,7 +1114,7 @@ async fn install_from_local_binary(
     source_binary: &Path,
 ) -> Result<()> {
     println!(
-        "📂 Installing from local binary: {}",
+        "📦 Installing from local binary: {}",
         source_binary.display()
     );
 
@@ -869,7 +1277,7 @@ fn parse_version_from_output(output: &str) -> Option<String> {
 
 /// Internal: Spawn a helper process (copy of current mdmcpcfg) that replaces the original exe with a new one
 pub fn run_self_upgrade_helper(pid: u32, orig: String, new: String) -> Result<()> {
-    println!("🔁 mdmcpcfg self-upgrade helper starting...");
+    println!("🛠️ mdmcpcfg self-upgrade helper starting...");
 
     let orig_path = PathBuf::from(orig);
     let new_path = PathBuf::from(new);
@@ -993,7 +1401,7 @@ async fn download_and_self_update_mdmcpcfg(release: &GitHubRelease) -> Result<()
         )
     })?;
 
-    println!("🔁 Preparing to self-update mdmcpcfg...");
+    println!("🛠️ Preparing to self-update mdmcpcfg...");
 
     // Spawn helper and exit
     let mut cmd = Command::new(&helper_path);
@@ -1062,7 +1470,7 @@ async fn try_self_update_from_local_tool(server_source_binary: &Path) -> Result<
         )
     })?;
 
-    println!("🔁 Preparing to self-update mdmcpcfg from local binary...");
+    println!("🛠️ Preparing to self-update mdmcpcfg from local binary...");
 
     // Spawn helper and exit
     let mut cmd = Command::new(&helper_path);
@@ -1196,6 +1604,62 @@ fn stop_claude_desktop() -> Result<()> {
         Ok(())
     }
 }
+
+#[cfg(target_os = "windows")]
+fn is_mdmcp_running() -> bool {
+    if let Ok(out) = Command::new("tasklist").output() {
+        let s = String::from_utf8_lossy(&out.stdout).to_ascii_lowercase();
+        return s.contains("mdmcpsrvr.exe");
+    }
+    false
+}
+
+#[cfg(not(target_os = "windows"))]
+fn is_mdmcp_running() -> bool { false }
+
+#[cfg(target_os = "windows")]
+fn mdmcp_parent_chain_names_lower() -> Vec<String> {
+    let ps = "\
+$p = Get-CimInstance Win32_Process -Filter \"Name='mdmcpsrvr.exe'\" | Select-Object -First 1;\
+if (-not $p) { return }\
+$names = @();\
+$seen = @{};\
+while ($p -and $p.ParentProcessId -ne 0) {\
+  try { $pp = Get-CimInstance Win32_Process -Filter \"ProcessId=$($p.ParentProcessId)\" -ErrorAction Stop } catch { break }\
+  if (-not $pp) { break }\
+  $names += $pp.Name;\
+  if ($seen.ContainsKey($pp.ProcessId)) { break }\
+  $seen[$pp.ProcessId] = $true;\
+  $p = $pp\
+}\
+$names -join ';'\
+";
+    if let Ok(out) = Command::new("powershell").args(["-NoProfile", "-Command", ps]).output() {
+        if out.status.success() {
+            let s = String::from_utf8_lossy(&out.stdout).to_string();
+            return s
+                .split(';')
+                .map(|v| v.trim().to_ascii_lowercase())
+                .filter(|v| !v.is_empty())
+                .collect();
+        }
+    }
+    Vec::new()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn mdmcp_parent_chain_names_lower() -> Vec<String> { Vec::new() }
+
+#[cfg(target_os = "windows")]
+fn stop_vs_code() -> Result<()> {
+    for name in ["Code.exe", "Code - Insiders.exe"] {
+        let _ = Command::new("taskkill").args(["/IM", name, "/F", "/T"]).status();
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn stop_vs_code() -> Result<()> { Ok(()) }
 
 /// Attempt to start Claude Desktop
 fn start_claude_desktop(_prev_path: Option<&str>) -> Result<()> {
@@ -1391,16 +1855,71 @@ pub async fn uninstall(remove_policy: bool, remove_claude_config: bool, yes: boo
     let paths = Paths::new()?;
 
     println!("🗑️ Uninstalling mdmcp MCP server...");
-    if !yes {
-        println!(
-            "This will remove the server binary{}{}.",
-            if remove_policy { ", policy file" } else { "" },
-            if remove_claude_config {
-                ", and Claude Desktop entry"
-            } else {
-                ""
+    // Remove server binary
+    let bin = paths.server_binary();
+    let bin_exists = bin.exists();
+    let plugins_dir = paths.bin_dir.join("plugins");
+    let known_plugins = ["mdaicli", "mdconfcli", "mdjiracli", "mdmailcli", "mdslackcli"];
+    let mut plugin_any = false;
+    for id in &known_plugins { if plugins_dir.join(format!("{}.exe", id)).exists() { plugin_any = true; break; } }
+    // On Windows, detect WSL installs across all distros (not just default)
+    #[cfg(target_os = "windows")]
+    let wsl_installs: Vec<String> = if wsl_available() {
+        let distros = wsl_list_distros();
+        distros
+            .into_iter()
+            .filter(|d|
+                // Check for server presence in the distro
+                wsl_path_exists(Some(d.as_str()), "~/.local/share/mdmcp/bin/mdmcpsrvr")
+            )
+            .collect()
+    } else { Vec::new() };
+    #[cfg(not(target_os = "windows"))]
+    let wsl_installs: Vec<String> = Vec::new();
+    let wsl_server_exists = !wsl_installs.is_empty();
+
+    // If nothing to do, exit early without prompting
+    if !bin_exists && !plugin_any && !wsl_server_exists && !remove_policy && !remove_claude_config {
+        println!("ℹ️  Nothing to uninstall: no server, plugins, WSL install, or selected config entries.");
+        return Ok(());
+    }
+
+    // Offer to stop apps that can lock the server binary (Windows only), only if relevant
+    #[cfg(target_os = "windows")]
+    if bin_exists || wsl_server_exists {
+        // Be precise: only suggest apps that appear in the parent chain of the running server
+        let mut suspects: Vec<&str> = Vec::new();
+        if is_mdmcp_running() {
+            let chain = mdmcp_parent_chain_names_lower();
+            if chain.iter().any(|n| n.contains("claude.exe")) { suspects.push("Claude Desktop"); }
+            if chain.iter().any(|n| n.contains("code.exe")) { suspects.push("VS Code"); }
+        }
+        if !suspects.is_empty() {
+            println!(
+                "The following apps appear related to a running mdmcpsrvr process: {}",
+                suspects.join(", ")
+            );
+            if prompt_named_confirmation("Stop them now? [Y/n]: ")? {
+                if suspects.iter().any(|s| *s == "Claude Desktop") { let _ = stop_claude_desktop(); }
+                if suspects.iter().any(|s| *s == "VS Code") { let _ = stop_vs_code(); }
             }
-        );
+        }
+    }
+
+
+    // Ask for confirmation only when needed
+    if !yes {
+        let mut items: Vec<&str> = Vec::new();
+        if bin_exists { items.push("server binary"); }
+        if remove_policy { items.push("policy file"); }
+        if remove_claude_config { items.push("Claude Desktop entry"); }
+        if wsl_server_exists { items.push("WSL server binary"); }
+        if plugin_any { items.push("Windows plugins"); }
+        if items.is_empty() {
+            println!("ℹ️  Nothing to uninstall.");
+            return Ok(());
+        }
+        println!("This will remove: {}.", items.join(", "));
         print!("Proceed? [y/N]: ");
         use std::io::{self, Write};
         io::stdout().flush()?;
@@ -1412,10 +1931,7 @@ pub async fn uninstall(remove_policy: bool, remove_claude_config: bool, yes: boo
             return Ok(());
         }
     }
-
-    // Remove server binary
-    let bin = paths.server_binary();
-    if bin.exists() {
+    if bin_exists {
         match std::fs::remove_file(&bin) {
             Ok(_) => println!("✅ Removed binary: {}", bin.display()),
             Err(e) => println!("⚠️  Failed to remove binary {}: {}", bin.display(), e),
@@ -1446,6 +1962,25 @@ pub async fn uninstall(remove_policy: bool, remove_claude_config: bool, yes: boo
         }
     }
 
+    // Remove Windows plugins if present
+    let plugins_dir = paths.bin_dir.join("plugins");
+    if plugins_dir.exists() {
+        let plugin_ids = ["mdaicli", "mdconfcli", "mdjiracli", "mdmailcli", "mdslackcli"]; 
+        let mut removed = 0;
+        for id in plugin_ids {
+            let p = plugins_dir.join(format!("{}.exe", id));
+            if p.exists() {
+                match std::fs::remove_file(&p) {
+                    Ok(_) => { println!("✅ Removed plugin: {}", p.display()); removed += 1; }
+                    Err(e) => println!("⚠️  Failed to remove plugin {}: {}", p.display(), e),
+                }
+            }
+        }
+        if removed == 0 {
+            println!("ℹ️  No plugin executables found in: {}", plugins_dir.display());
+        }
+    }
+
     // Optionally remove Claude Desktop entry
     if remove_claude_config {
         match ClaudeDesktopConfig::load_or_default() {
@@ -1458,6 +1993,32 @@ pub async fn uninstall(remove_policy: bool, remove_claude_config: bool, yes: boo
                 }
             }
             Err(e) => println!("⚠️  Could not load Claude Desktop config: {}", e),
+        }
+    }
+
+    // Remove WSL-side server (and optionally policy) when available (Windows only)
+    #[cfg(target_os = "windows")]
+    {
+        if !wsl_installs.is_empty() {
+            // If interactive, inform the user which distros will be cleaned
+            if !yes {
+                println!(
+                    "Will remove WSL-side components from distros: {}",
+                    wsl_installs.join(", ")
+                );
+            }
+            for d in &wsl_installs {
+                let server_exists = wsl_path_exists(Some(d.as_str()), "~/.local/share/mdmcp/bin/mdmcpsrvr");
+                let policy_exists = if remove_policy { wsl_path_exists(Some(d.as_str()), "~/.config/mdmcp/policy.user.yaml") } else { false };
+                if server_exists {
+                    let _ = wsl_exec_status(Some(d.as_str()), "rm -f ~/.local/share/mdmcp/bin/mdmcpsrvr");
+                    println!("✅ [{}] Removed WSL server binary: ~/.local/share/mdmcp/bin/mdmcpsrvr", d);
+                }
+                if policy_exists {
+                    let _ = wsl_exec_status(Some(d.as_str()), "rm -f ~/.config/mdmcp/policy.user.yaml");
+                    println!("✅ [{}] Removed WSL policy: ~/.config/mdmcp/policy.user.yaml", d);
+                }
+            }
         }
     }
 
@@ -1618,7 +2179,7 @@ async fn download_binary(
         if let Err(e) = download_server_from_zip_verified(release, dest_path, &v).await {
             // Fall back to legacy direct-asset logic below
             println!(
-                "ℹ️  Zip-based server download not available ({}); trying raw asset…",
+                "ℹ️  Zip-based server download not available ({}); trying raw asset...",
                 e
             );
         } else {
@@ -1726,7 +2287,7 @@ async fn create_default_policies(paths: &Paths) -> Result<()> {
             );
         }
         println!(
-            "ℹ️  Core policy already exists: {}",
+            "\u{2139}\u{FE0F}  Core policy already exists: {}",
             paths.core_policy_file.display()
         );
     }
@@ -1739,7 +2300,7 @@ async fn create_default_policies(paths: &Paths) -> Result<()> {
         println!("✅ Created user policy: {}", paths.policy_file.display());
     } else {
         println!(
-            "ℹ️  User policy already exists: {}",
+            "\u{2139}\u{FE0F}  User policy already exists: {}",
             paths.policy_file.display()
         );
     }
@@ -2491,21 +3052,8 @@ async fn download_binary_verified(
         );
     }
 
-    // Write to destination atomically
-    let mut temp_file = NamedTempFile::new().context("Failed to create temporary file")?;
-    use std::io::Write as _;
-    temp_file
-        .write_all(&bytes)
-        .context("Failed to write temporary file")?;
-    fs::copy(temp_file.path(), dest_path).context("Failed to move binary to destination")?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(dest_path)?.permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(dest_path, perms)?;
-    }
+    // Write to destination atomically within the same directory as dest
+    write_bytes_atomically(dest_path, &bytes)?;
     if !is_executable(dest_path) {
         bail!(
             "Downloaded binary is not executable: {}",
@@ -2585,28 +3133,60 @@ async fn download_server_from_zip_verified(
 
     let reader = std::io::Cursor::new(bytes);
     let mut zip = zip::ZipArchive::new(reader).context("Failed to read zip archive")?;
+    // Resolve the actual entry name first, then open once to avoid borrow conflicts
+    let mut chosen_name: Option<String> = None;
+    if zip.by_name(target_entry).is_ok() {
+        chosen_name = Some(target_entry.to_string());
+    } else {
+        let candidates: &[&str] = if cfg!(target_os = "windows") {
+            &[
+                "mdmcpsrvr.exe",
+                "./mdmcpsrvr.exe",
+                "bin/Release/mdmcpsrvr.exe",
+                "bin/mdmcpsrvr.exe",
+            ]
+        } else {
+            &[
+                "mdmcpsrvr",
+                "./mdmcpsrvr",
+                "bin/mdmcpsrvr",
+                "bin/Release/mdmcpsrvr",
+            ]
+        };
+        for name in candidates {
+            if zip.by_name(name).is_ok() {
+                chosen_name = Some((*name).to_string());
+                break;
+            }
+        }
+        if chosen_name.is_none() {
+            let want = if cfg!(target_os = "windows") { "mdmcpsrvr.exe" } else { "mdmcpsrvr" };
+            let total = zip.len();
+            for i in 0..total {
+                if let Ok(e) = zip.by_index(i) {
+                    let name = e.name().to_string();
+                    if name.ends_with(want) && !name.ends_with('/') {
+                        chosen_name = Some(name);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    let entry_name = chosen_name.ok_or_else(|| anyhow::anyhow!(
+        "Entry not found in zip; tried {} and common fallbacks",
+        target_entry
+    ))?;
     let mut file = zip
-        .by_name(target_entry)
-        .with_context(|| format!("Entry not found in zip: {}", target_entry))?;
+        .by_name(&entry_name)
+        .with_context(|| format!("Entry not found in zip: {}", entry_name))?;
 
-    // Write out atomically
-    let mut temp_file = NamedTempFile::new().context("Failed to create temporary file")?;
-    use std::io::{Read as _, Write as _};
+    // Write out atomically in-place
+    use std::io::Read as _;
     let mut buf = Vec::with_capacity(file.size() as usize);
     file.read_to_end(&mut buf)
         .context("Failed to read entry from zip")?;
-    temp_file
-        .write_all(&buf)
-        .context("Failed to write temporary file")?;
-    fs::copy(temp_file.path(), dest_path).context("Failed to move binary to destination")?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(dest_path)?.permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(dest_path, perms)?;
-    }
+    write_bytes_atomically(dest_path, &buf)?;
     if !is_executable(dest_path) {
         bail!(
             "Extracted binary is not executable: {}",
@@ -2616,3 +3196,42 @@ async fn download_server_from_zip_verified(
     println!("📦 Extracted mdmcpsrvr from {}", zip_name);
     Ok(())
 }
+
+/// Atomically write bytes to `dest_path` by staging a temp file in the same directory
+fn write_bytes_atomically(dest_path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write as _;
+    if let Some(parent) = dest_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create directory: {}", parent.display()))?;
+    }
+    let parent = dest_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(std::env::temp_dir);
+    let mut temp = NamedTempFile::new_in(&parent).context("Failed to create temporary file")?;
+    temp.write_all(bytes)
+        .context("Failed to write temporary file")?;
+    temp.flush().ok();
+    // On Windows, remove destination first to avoid rename errors when file exists/locked
+    if dest_path.exists() {
+        // Best-effort remove; ignore errors
+        let _ = fs::remove_file(dest_path);
+    }
+    temp.persist(dest_path)
+        .map_err(|e| anyhow::anyhow!("Failed to move binary to destination: {}", e))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(dest_path)?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(dest_path, perms)?;
+    }
+    Ok(())
+}
+
+
+
+
+
+
+

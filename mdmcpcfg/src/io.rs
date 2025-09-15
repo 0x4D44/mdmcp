@@ -223,6 +223,38 @@ impl ClaudeDesktopConfig {
         }
     }
 
+    /// Add or update the mdmcp server entry to launch a WSL Linux server from Windows.
+    /// This forces a `wsl.exe` launcher with the provided distro (optional), server path and policy path
+    /// using Linux paths as seen inside the distro.
+    #[cfg(target_os = "windows")]
+    pub fn add_mdmcp_server_wsl(
+        &mut self,
+        distro: Option<&str>,
+        linux_server_binary: &Path,
+        linux_policy_file: &Path,
+    ) -> Result<()> {
+        let mut args: Vec<serde_json::Value> = Vec::new();
+        if let Some(d) = distro {
+            if !d.trim().is_empty() {
+                args.push(serde_json::json!("-d"));
+                args.push(serde_json::json!(d));
+            }
+        }
+        args.push(serde_json::json!(linux_server_binary.to_string_lossy()));
+        args.push(serde_json::json!("--config"));
+        args.push(serde_json::json!(linux_policy_file.to_string_lossy()));
+        args.push(serde_json::json!("--stdio"));
+
+        let server_config = serde_json::json!({
+            "command": "wsl.exe",
+            "args": args,
+            "env": {}
+        });
+
+        self.mcp_servers.insert("mdmcp".to_string(), server_config);
+        Ok(())
+    }
+
     /// Save the configuration to Claude Desktop's config file
     pub fn save(&self) -> Result<()> {
         let config_path = Self::config_path()?;
