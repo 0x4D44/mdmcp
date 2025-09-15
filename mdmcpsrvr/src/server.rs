@@ -1333,49 +1333,65 @@ impl Server {
                         )
                     }
                 };
-                // Build MCP tool content blocks. Prefer stdout; include stderr if present.
-                let mut content_blocks: Vec<serde_json::Value> = Vec::new();
-                if !cmd_out.stdout.is_empty() {
-                    content_blocks.push(serde_json::json!({
-                        "type": "text",
-                        "text": cmd_out.stdout,
-                    }));
+                // If failure, return compact header + 256-byte tails of stderr/stdout; else, return full outputs.
+                fn tail_utf8(s: &str, max_bytes: usize) -> &str {
+                    if s.len() <= max_bytes { return s; }
+                    let start = s.len() - max_bytes;
+                    let idx = s.char_indices().find(|(i, _)| *i >= start).map(|(i, _)| i).unwrap_or(0);
+                    &s[idx..]
                 }
-                if !cmd_out.stderr.is_empty() {
-                    content_blocks.push(serde_json::json!({
-                        "type": "text",
-                        "text": format!("[stderr]\n{}", cmd_out.stderr),
-                    }));
-                }
-                if content_blocks.is_empty() {
-                    content_blocks.push(serde_json::json!({
-                        "type": "text",
-                        "text": "(command produced no output)",
-                    }));
-                }
-                // Add a trailing status note if helpful
-                if cmd_out.timed_out || cmd_out.truncated || cmd_out.exit_code != 0 {
-                    let mut notes: Vec<String> = Vec::new();
-                    if cmd_out.timed_out {
-                        notes.push("timed out".to_string());
+
+                let result = if cmd_out.exit_code != 0 || cmd_out.timed_out {
+                    let mut status_parts: Vec<&str> = Vec::new();
+                    if cmd_out.timed_out { status_parts.push("timeout"); }
+                    if cmd_out.truncated { status_parts.push("output truncated"); }
+                    let header = if status_parts.is_empty() {
+                        format!("run_command failed: exit={}", cmd_out.exit_code)
+                    } else {
+                        format!("run_command failed: exit={} ({})", cmd_out.exit_code, status_parts.join(", "))
+                    };
+                    let mut text = String::new();
+                    text.push_str(&header);
+                    text.push('\n');
+                    if !cmd_out.stderr.is_empty() {
+                        text.push_str("stderr (last 256 bytes):\n");
+                        text.push_str(tail_utf8(&cmd_out.stderr, 256));
+                        text.push('\n');
                     }
-                    if cmd_out.truncated {
-                        notes.push("output truncated".to_string());
+                    if !cmd_out.stdout.is_empty() {
+                        text.push_str("stdout (last 256 bytes):\n");
+                        text.push_str(tail_utf8(&cmd_out.stdout, 256));
+                        text.push('\n');
                     }
-                    if cmd_out.exit_code != 0 {
-                        notes.push(format!("exit code {}", cmd_out.exit_code));
-                    }
-                    if !notes.is_empty() {
+                    serde_json::json!({
+                        "content": [{"type": "text", "text": text}],
+                        "isError": false
+                    })
+                } else {
+                    let mut content_blocks: Vec<serde_json::Value> = Vec::new();
+                    if !cmd_out.stdout.is_empty() {
                         content_blocks.push(serde_json::json!({
                             "type": "text",
-                            "text": format!("[note] {}", notes.join(", ")),
+                            "text": cmd_out.stdout,
                         }));
                     }
-                }
-                let result = serde_json::json!({
-                    "content": content_blocks,
-                    "isError": false
-                });
+                    if !cmd_out.stderr.is_empty() {
+                        content_blocks.push(serde_json::json!({
+                            "type": "text",
+                            "text": format!("[stderr]\n{}", cmd_out.stderr),
+                        }));
+                    }
+                    if content_blocks.is_empty() {
+                        content_blocks.push(serde_json::json!({
+                            "type": "text",
+                            "text": "(command produced no output)",
+                        }));
+                    }
+                    serde_json::json!({
+                        "content": content_blocks,
+                        "isError": false
+                    })
+                };
                 self.auditor.log_success(
                     ctx,
                     SuccessDetails {
