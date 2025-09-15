@@ -2012,10 +2012,10 @@ pub async fn uninstall(remove_policy: bool, remove_claude_config: bool, yes: boo
                 suspects.join(", ")
             );
             if prompt_named_confirmation("Stop them now? [Y/n]: ")? {
-                if suspects.iter().any(|s| *s == "Claude Desktop") {
+                if suspects.contains(&"Claude Desktop") {
                     let _ = stop_claude_desktop();
                 }
-                if suspects.iter().any(|s| *s == "VS Code") {
+                if suspects.contains(&"VS Code") {
                     let _ = stop_vs_code();
                 }
             }
