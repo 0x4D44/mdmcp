@@ -1,4 +1,4 @@
-﻿//! # Policy management commands
+//! # Policy management commands
 //!
 //! This module handles policy file operations including display, editing, validation,
 //! and modification of policy configurations.
@@ -17,7 +17,10 @@ pub async fn show() -> Result<()> {
     let paths = Paths::new()?;
 
     if !paths.policy_file.exists() {
-        println!("ERROR: Policy file not found: {}", paths.policy_file.display());
+        println!(
+            "ERROR: Policy file not found: {}",
+            paths.policy_file.display()
+        );
         println!("HINT: Run 'mdmcpcfg install' to create a default policy");
         return Ok(());
     }
@@ -44,7 +47,10 @@ pub async fn edit() -> Result<()> {
     let paths = Paths::new()?;
 
     if !paths.policy_file.exists() {
-        println!("ERROR: Policy file not found: {}", paths.policy_file.display());
+        println!(
+            "ERROR: Policy file not found: {}",
+            paths.policy_file.display()
+        );
         println!("HINT: Run 'mdmcpcfg install' to create a default policy");
         return Ok(());
     }
@@ -167,7 +173,8 @@ pub async fn set_exec(id: String, exec: String) -> Result<()> {
         );
     }
     let content = read_file(&paths.policy_file)?;
-    let mut policy: Value = serde_yaml::from_str(&content).context("Failed to parse policy file")?;
+    let mut policy: Value =
+        serde_yaml::from_str(&content).context("Failed to parse policy file")?;
 
     let commands = policy
         .get_mut("commands")
@@ -190,10 +197,22 @@ pub async fn set_exec(id: String, exec: String) -> Result<()> {
         let mut command = Mapping::new();
         command.insert(Value::String("id".into()), Value::String(id.clone()));
         command.insert(Value::String("exec".into()), Value::String(exec.clone()));
-        command.insert(Value::String("cwd_policy".into()), Value::String("within_root".into()));
-        command.insert(Value::String("env_allowlist".into()), Value::Sequence(vec![]));
-        command.insert(Value::String("timeout_ms".into()), Value::Number(20000.into()));
-        command.insert(Value::String("max_output_bytes".into()), Value::Number(2_000_000.into()));
+        command.insert(
+            Value::String("cwd_policy".into()),
+            Value::String("within_root".into()),
+        );
+        command.insert(
+            Value::String("env_allowlist".into()),
+            Value::Sequence(vec![]),
+        );
+        command.insert(
+            Value::String("timeout_ms".into()),
+            Value::Number(20000.into()),
+        );
+        command.insert(
+            Value::String("max_output_bytes".into()),
+            Value::Number(2_000_000.into()),
+        );
         command.insert(Value::String("allow_any_args".into()), Value::Bool(true));
         let platforms = if cfg!(target_os = "windows") {
             vec![Value::String("windows".into())]

@@ -1,4 +1,4 @@
-﻿//! # System diagnostics command
+//! # System diagnostics command
 //!
 //! This module implements the doctor command that checks system health,
 //! configuration validity, and MCP server functionality.
@@ -8,8 +8,8 @@ use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+use crate::commands::doctor_extra::{check_wsl_side, print_summary_clean};
 use crate::io::{is_executable, ClaudeDesktopConfig, Paths};
-use crate::commands::doctor_extra::{print_summary_clean, check_wsl_side};
 
 /// Run comprehensive system diagnostics
 pub async fn run() -> Result<()> {
@@ -45,9 +45,15 @@ pub async fn run() -> Result<()> {
     if issues.is_empty() && warnings.is_empty() {
         println!("🎉 All checks passed! Your mdmcp installation is healthy.");
     } else if issues.is_empty() {
-        println!("⚠️  Found {} warnings, but no critical issues.", warnings.len());
+        println!(
+            "⚠️  Found {} warnings, but no critical issues.",
+            warnings.len()
+        );
     } else {
-        println!("❌ Found {} critical issues that need attention.", issues.len());
+        println!(
+            "❌ Found {} critical issues that need attention.",
+            issues.len()
+        );
         if !warnings.is_empty() {
             println!("   Also found {} warnings.", warnings.len());
         }
@@ -103,7 +109,10 @@ async fn check_installation(issues: &mut Vec<String>, _warnings: &mut [String]) 
         }
     }
 
-    println!("   ✅ Binary found and executable: {}", binary_path.display());
+    println!(
+        "   ✅ Binary found and executable: {}",
+        binary_path.display()
+    );
 
     // Check installation info
     if let Ok(info_path) = paths.config_dir.join("install_info.json").canonicalize() {
@@ -133,7 +142,10 @@ async fn check_policy(issues: &mut Vec<String>, warnings: &mut Vec<String>) -> R
             "Policy file not found: {}",
             paths.policy_file.display()
         ));
-        println!("   ❌ Policy file not found: {}", paths.policy_file.display());
+        println!(
+            "   ❌ Policy file not found: {}",
+            paths.policy_file.display()
+        );
         return Ok(());
     }
 
@@ -189,7 +201,9 @@ async fn check_policy(issues: &mut Vec<String>, warnings: &mut Vec<String>) -> R
             }
         }
 
-        if accessible_count > 0 { println!("   ✅ {} allowed roots are accessible", accessible_count); }
+        if accessible_count > 0 {
+            println!("   ✅ {} allowed roots are accessible", accessible_count);
+        }
     }
 
     // Check commands
@@ -210,13 +224,18 @@ async fn check_policy(issues: &mut Vec<String>, warnings: &mut Vec<String>) -> R
                             "Command '{}' executable not found: {}",
                             cmd_id, exec
                         ));
-                        println!("     ⚠️  Command '{}' executable not found: {}", cmd_id, exec);
+                        println!(
+                            "     ⚠️  Command '{}' executable not found: {}",
+                            cmd_id, exec
+                        );
                     }
                 }
             }
         }
 
-        if valid_commands > 0 { println!("   ✅ {} commands have valid executables", valid_commands); }
+        if valid_commands > 0 {
+            println!("   ✅ {} commands have valid executables", valid_commands);
+        }
     }
 
     Ok(())
@@ -241,12 +260,18 @@ async fn check_claude_desktop(issues: &mut Vec<String>, warnings: &mut Vec<Strin
     if !claude_config_path.exists() {
         warnings
             .push("Claude Desktop config file not found - MCP server not configured".to_string());
-        println!("   ⚠️  Claude Desktop config not found: {}", claude_config_path.display());
+        println!(
+            "   ⚠️  Claude Desktop config not found: {}",
+            claude_config_path.display()
+        );
         println!("      Run 'mdmcpcfg install' to configure Claude Desktop integration");
         return Ok(());
     }
 
-    println!("   ✅ Claude Desktop config exists: {}", claude_config_path.display());
+    println!(
+        "   ✅ Claude Desktop config exists: {}",
+        claude_config_path.display()
+    );
 
     // Check if mdmcp is configured
     match ClaudeDesktopConfig::load_or_default() {
@@ -313,7 +338,9 @@ async fn check_system_dependencies(
         }
     }
 
-    if found_tools > 0 { println!("   ✅ Found {} system tools", found_tools); }
+    if found_tools > 0 {
+        println!("   ✅ Found {} system tools", found_tools);
+    }
 
     Ok(())
 }
@@ -372,8 +399,3 @@ async fn test_server_functionality(
 
     Ok(())
 }
-
-
-
-
-
