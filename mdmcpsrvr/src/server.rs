@@ -1335,20 +1335,34 @@ impl Server {
                 };
                 // If failure, return compact header + 256-byte tails of stderr/stdout; else, return full outputs.
                 fn tail_utf8(s: &str, max_bytes: usize) -> &str {
-                    if s.len() <= max_bytes { return s; }
+                    if s.len() <= max_bytes {
+                        return s;
+                    }
                     let start = s.len() - max_bytes;
-                    let idx = s.char_indices().find(|(i, _)| *i >= start).map(|(i, _)| i).unwrap_or(0);
+                    let idx = s
+                        .char_indices()
+                        .find(|(i, _)| *i >= start)
+                        .map(|(i, _)| i)
+                        .unwrap_or(0);
                     &s[idx..]
                 }
 
                 let result = if cmd_out.exit_code != 0 || cmd_out.timed_out {
                     let mut status_parts: Vec<&str> = Vec::new();
-                    if cmd_out.timed_out { status_parts.push("timeout"); }
-                    if cmd_out.truncated { status_parts.push("output truncated"); }
+                    if cmd_out.timed_out {
+                        status_parts.push("timeout");
+                    }
+                    if cmd_out.truncated {
+                        status_parts.push("output truncated");
+                    }
                     let header = if status_parts.is_empty() {
                         format!("run_command failed: exit={}", cmd_out.exit_code)
                     } else {
-                        format!("run_command failed: exit={} ({})", cmd_out.exit_code, status_parts.join(", "))
+                        format!(
+                            "run_command failed: exit={} ({})",
+                            cmd_out.exit_code,
+                            status_parts.join(", ")
+                        )
                     };
                     let mut text = String::new();
                     text.push_str(&header);
