@@ -356,6 +356,7 @@ fn wsl_list_distros() -> Vec<String> {
 }
 
 #[cfg(not(target_os = "windows"))]
+#[allow(dead_code)]
 fn wsl_list_distros() -> Vec<String> {
     Vec::new()
 }
@@ -392,6 +393,7 @@ fn wsl_path_exists(distro: Option<&str>, path: &str) -> bool {
 }
 
 #[cfg(not(target_os = "windows"))]
+#[allow(dead_code)]
 fn wsl_path_exists(_distro: Option<&str>, _path: &str) -> bool {
     false
 }
@@ -549,6 +551,7 @@ async fn add_plugins_to_policy_wsl(wsl_distro: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "windows")]
 async fn configure_claude_for_wsl(
     wsl_distro: Option<&str>,
     linux_paths: Option<(String, String)>,
@@ -566,6 +569,15 @@ async fn configure_claude_for_wsl(
     cfg.add_mdmcp_server_wsl(wsl_distro, &server, &policy)?;
     cfg.save()?;
     println!("✅ Updated Claude Desktop to launch WSL server");
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+async fn configure_claude_for_wsl(
+    _wsl_distro: Option<&str>,
+    _linux_paths: Option<(String, String)>,
+) -> Result<()> {
+    // On non-Windows hosts this is a no-op; we don't manage Windows Claude config here.
     Ok(())
 }
 
@@ -1700,6 +1712,7 @@ fn is_mdmcp_running() -> bool {
 }
 
 #[cfg(not(target_os = "windows"))]
+#[allow(dead_code)]
 fn is_mdmcp_running() -> bool {
     false
 }
@@ -1738,6 +1751,7 @@ $names -join ';'\
 }
 
 #[cfg(not(target_os = "windows"))]
+#[allow(dead_code)]
 fn mdmcp_parent_chain_names_lower() -> Vec<String> {
     Vec::new()
 }
@@ -1753,6 +1767,7 @@ fn stop_vs_code() -> Result<()> {
 }
 
 #[cfg(not(target_os = "windows"))]
+#[allow(dead_code)]
 fn stop_vs_code() -> Result<()> {
     Ok(())
 }

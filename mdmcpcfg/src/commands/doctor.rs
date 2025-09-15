@@ -8,7 +8,9 @@ use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use crate::commands::doctor_extra::{check_wsl_side, print_summary_clean};
+#[cfg(target_os = "windows")]
+use crate::commands::doctor_extra::check_wsl_side;
+use crate::commands::doctor_extra::print_summary_clean;
 use crate::io::{is_executable, ClaudeDesktopConfig, Paths};
 
 /// Run comprehensive system diagnostics

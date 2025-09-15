@@ -1,5 +1,9 @@
+#[cfg(target_os = "windows")]
 use crate::io::ClaudeDesktopConfig;
-use anyhow::{Context, Result};
+#[cfg(target_os = "windows")]
+use anyhow::Context;
+use anyhow::Result;
+#[cfg(target_os = "windows")]
 use std::process::{Command, Stdio};
 
 pub fn print_summary_clean(issues: &[String], warnings: &[String]) {
@@ -138,6 +142,7 @@ pub async fn check_wsl_side(_warnings: &mut Vec<String>, issues: &mut Vec<String
 
 #[cfg(not(target_os = "windows"))]
 #[allow(clippy::ptr_arg)]
+#[allow(dead_code)]
 pub async fn check_wsl_side(_warnings: &mut Vec<String>, _issues: &mut Vec<String>) -> Result<()> {
     Ok(())
 }
