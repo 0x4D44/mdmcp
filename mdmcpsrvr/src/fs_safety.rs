@@ -21,6 +21,8 @@ pub enum FsError {
     PathNotAllowed { path: String },
     #[error("Network filesystem access denied: {path}")]
     NetworkFsDenied { path: String },
+    #[error("WSL path access denied (policy: deny_all): {path}")]
+    WslPathDenied { path: String },
     #[error("Special file not supported: {path}")]
     SpecialFile { path: String },
     #[error("Write not permitted: {path}")]
@@ -29,6 +31,144 @@ pub enum FsError {
     FileTooLarge { size: u64, limit: u64 },
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
+}
+
+/// Classification of UNC paths (Windows only)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UncPathType {
+    /// Local WSL filesystem (\\wsl$\ or \\wsl.localhost\)
+    LocalWsl,
+    /// Remote network share
+    RemoteNetwork,
+    /// Not a UNC path
+    NotUnc,
+}
+
+/// Check if a path is a local WSL UNC path
+/// Returns true for paths like \\wsl$\Ubuntu\... or \\wsl.localhost\Ubuntu\...
+#[cfg(target_os = "windows")]
+fn is_local_wsl_path(path: &Path) -> bool {
+    let path_str = path.to_string_lossy();
+    let lower = path_str.to_lowercase();
+
+    // Check for \\wsl$ or \\wsl.localhost
+    if lower.starts_with("\\\\wsl$\\") || lower.starts_with("\\\\wsl.localhost\\") {
+        return true;
+    }
+
+    // Also handle forward slash variants that might come from path normalization
+    if lower.starts_with("//wsl$/") || lower.starts_with("//wsl.localhost/") {
+        return true;
+    }
+
+    false
+}
+
+/// Classify a UNC path (Windows only)
+#[cfg(target_os = "windows")]
+fn classify_unc_path(path: &Path) -> UncPathType {
+    let path_str = path.to_string_lossy();
+
+    // Must start with \\ to be UNC (but not \\?\ which is long path prefix)
+    if !path_str.starts_with("\\\\") || path_str.starts_with("\\\\?\\") {
+        return UncPathType::NotUnc;
+    }
+
+    if is_local_wsl_path(path) {
+        UncPathType::LocalWsl
+    } else {
+        UncPathType::RemoteNetwork
+    }
+}
+
+/// Check network filesystem access based on policy (Windows implementation)
+#[cfg(target_os = "windows")]
+pub(crate) fn check_network_fs_access(
+    path: &Path,
+    policy: mdmcp_policy::NetworkFsPolicy,
+) -> Result<(), FsError> {
+    use mdmcp_policy::NetworkFsPolicy;
+
+    match policy {
+        NetworkFsPolicy::AllowAll => Ok(()),
+        NetworkFsPolicy::DenyAll | NetworkFsPolicy::AllowLocalWsl => {
+            // Check UNC path type
+            match classify_unc_path(path) {
+                UncPathType::NotUnc => {
+                    // Check for mapped network drives
+                    if is_mapped_network_drive(path)? {
+                        return Err(FsError::NetworkFsDenied {
+                            path: path.display().to_string(),
+                        });
+                    }
+                    Ok(())
+                }
+                UncPathType::LocalWsl => {
+                    if policy == NetworkFsPolicy::DenyAll {
+                        Err(FsError::WslPathDenied {
+                            path: path.display().to_string(),
+                        })
+                    } else {
+                        // AllowLocalWsl permits this
+                        Ok(())
+                    }
+                }
+                UncPathType::RemoteNetwork => Err(FsError::NetworkFsDenied {
+                    path: path.display().to_string(),
+                }),
+            }
+        }
+    }
+}
+
+/// Check if a path is on a mapped network drive (Windows only)
+#[cfg(target_os = "windows")]
+fn is_mapped_network_drive(path: &Path) -> Result<bool, FsError> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+
+    if let Some(root) = path.ancestors().last() {
+        let root_str = format!("{}\\", root.display());
+        // Skip if it looks like a UNC path root (e.g., \\server\share)
+        if root_str.starts_with("\\\\") {
+            return Ok(false);
+        }
+        let root_wide: Vec<u16> = OsStr::new(&root_str)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+
+        let drive_type =
+            unsafe { windows_sys::Win32::Storage::FileSystem::GetDriveTypeW(root_wide.as_ptr()) };
+
+        // DRIVE_REMOTE = 4
+        return Ok(drive_type == 4);
+    }
+
+    Ok(false)
+}
+
+/// Check network filesystem access based on policy (Unix implementation - WSL not applicable)
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn check_network_fs_access(
+    path: &Path,
+    policy: mdmcp_policy::NetworkFsPolicy,
+) -> Result<(), FsError> {
+    use mdmcp_policy::NetworkFsPolicy;
+
+    match policy {
+        NetworkFsPolicy::AllowAll => Ok(()),
+        // On Unix, WSL paths don't exist, so DenyAll and AllowLocalWsl behave the same
+        NetworkFsPolicy::DenyAll | NetworkFsPolicy::AllowLocalWsl => {
+            if is_network_fs(path)? {
+                Err(FsError::NetworkFsDenied {
+                    path: path.display().to_string(),
+                })
+            } else {
+                Ok(())
+            }
+        }
+    }
 }
 
 /// Safe file reader with policy enforcement
@@ -65,12 +205,8 @@ impl GuardedFileReader {
             });
         }
 
-        // Check for network filesystem
-        if policy.policy.deny_network_fs && is_network_fs(&canonical)? {
-            return Err(FsError::NetworkFsDenied {
-                path: canonical.display().to_string(),
-            });
-        }
+        // Check for network filesystem using the effective policy
+        check_network_fs_access(&canonical, policy.policy.effective_network_fs_policy())?;
 
         // Check if it's a special file
         if is_special_file(&canonical)? {
@@ -195,12 +331,8 @@ impl GuardedFileWriter {
             )));
         }
 
-        // Check for network filesystem
-        if policy.policy.deny_network_fs && is_network_fs(&canonical)? {
-            return Err(FsError::NetworkFsDenied {
-                path: canonical.display().to_string(),
-            });
-        }
+        // Check for network filesystem using the effective policy
+        check_network_fs_access(&canonical, policy.policy.effective_network_fs_policy())?;
 
         // Path allowance is implied by the write rule match above
 
@@ -506,6 +638,7 @@ mod tests {
 
         let policy = Policy {
             version: 1,
+            network_fs_policy: None,
             deny_network_fs: false,
             allowed_roots: vec![test_root.to_string_lossy().to_string()],
             write_rules: vec![WriteRule {
@@ -530,6 +663,7 @@ mod tests {
         let temp_dir = temp_file.path().parent().unwrap();
         let policy = Policy {
             version: 1,
+            network_fs_policy: None,
             deny_network_fs: false,
             allowed_roots: vec![temp_dir.to_string_lossy().to_string()],
             write_rules: vec![],
@@ -578,5 +712,141 @@ mod tests {
 
         let result = writer.write_atomic(&large_data);
         assert!(matches!(result, Err(FsError::FileTooLarge { .. })));
+    }
+
+    // WSL UNC path tests (Windows-only)
+    #[cfg(target_os = "windows")]
+    mod wsl_tests {
+        use super::*;
+
+        #[test]
+        fn test_classify_unc_path_wsl_dollar() {
+            let path = PathBuf::from(r"\\wsl$\Ubuntu\home\user\file.txt");
+            assert_eq!(classify_unc_path(&path), UncPathType::LocalWsl);
+        }
+
+        #[test]
+        fn test_classify_unc_path_wsl_localhost() {
+            let path = PathBuf::from(r"\\wsl.localhost\Ubuntu\home\user\file.txt");
+            assert_eq!(classify_unc_path(&path), UncPathType::LocalWsl);
+        }
+
+        #[test]
+        fn test_classify_unc_path_wsl_case_insensitive() {
+            let path1 = PathBuf::from(r"\\WSL$\Ubuntu\home\user");
+            let path2 = PathBuf::from(r"\\WSL.LOCALHOST\Ubuntu\home\user");
+            assert_eq!(classify_unc_path(&path1), UncPathType::LocalWsl);
+            assert_eq!(classify_unc_path(&path2), UncPathType::LocalWsl);
+        }
+
+        #[test]
+        fn test_classify_unc_path_remote_network() {
+            let path = PathBuf::from(r"\\server\share\file.txt");
+            assert_eq!(classify_unc_path(&path), UncPathType::RemoteNetwork);
+        }
+
+        #[test]
+        fn test_classify_unc_path_not_unc() {
+            let path = PathBuf::from(r"C:\Users\test\file.txt");
+            assert_eq!(classify_unc_path(&path), UncPathType::NotUnc);
+        }
+
+        #[test]
+        fn test_classify_unc_path_long_path_prefix() {
+            // Long path prefix should not be treated as UNC
+            let path = PathBuf::from(r"\\?\C:\Users\test\file.txt");
+            assert_eq!(classify_unc_path(&path), UncPathType::NotUnc);
+        }
+
+        #[test]
+        fn test_check_network_fs_deny_all_blocks_wsl() {
+            use mdmcp_policy::NetworkFsPolicy;
+            let path = PathBuf::from(r"\\wsl$\Ubuntu\home\user\file.txt");
+            let result = check_network_fs_access(&path, NetworkFsPolicy::DenyAll);
+            assert!(matches!(result, Err(FsError::WslPathDenied { .. })));
+        }
+
+        #[test]
+        fn test_check_network_fs_allow_local_wsl_permits_wsl() {
+            use mdmcp_policy::NetworkFsPolicy;
+            let path = PathBuf::from(r"\\wsl$\Ubuntu\home\user\file.txt");
+            let result = check_network_fs_access(&path, NetworkFsPolicy::AllowLocalWsl);
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn test_check_network_fs_allow_local_wsl_blocks_remote() {
+            use mdmcp_policy::NetworkFsPolicy;
+            let path = PathBuf::from(r"\\server\share\file.txt");
+            let result = check_network_fs_access(&path, NetworkFsPolicy::AllowLocalWsl);
+            assert!(matches!(result, Err(FsError::NetworkFsDenied { .. })));
+        }
+
+        #[test]
+        fn test_check_network_fs_allow_all_permits_everything() {
+            use mdmcp_policy::NetworkFsPolicy;
+            let wsl_path = PathBuf::from(r"\\wsl$\Ubuntu\home\user\file.txt");
+            let remote_path = PathBuf::from(r"\\server\share\file.txt");
+            assert!(check_network_fs_access(&wsl_path, NetworkFsPolicy::AllowAll).is_ok());
+            assert!(check_network_fs_access(&remote_path, NetworkFsPolicy::AllowAll).is_ok());
+        }
+    }
+
+    // Tests for NetworkFsPolicy backward compatibility
+    #[test]
+    fn test_effective_network_fs_policy_new_field_takes_precedence() {
+        use mdmcp_policy::NetworkFsPolicy;
+        let policy = Policy {
+            version: 1,
+            network_fs_policy: Some(NetworkFsPolicy::AllowLocalWsl),
+            deny_network_fs: true, // This should be ignored
+            allowed_roots: vec![],
+            write_rules: vec![],
+            commands: vec![],
+            logging: LoggingConfig::default(),
+            limits: LimitsConfig::default(),
+        };
+        assert_eq!(
+            policy.effective_network_fs_policy(),
+            NetworkFsPolicy::AllowLocalWsl
+        );
+    }
+
+    #[test]
+    fn test_effective_network_fs_policy_legacy_deny_true() {
+        use mdmcp_policy::NetworkFsPolicy;
+        let policy = Policy {
+            version: 1,
+            network_fs_policy: None,
+            deny_network_fs: true,
+            allowed_roots: vec![],
+            write_rules: vec![],
+            commands: vec![],
+            logging: LoggingConfig::default(),
+            limits: LimitsConfig::default(),
+        };
+        assert_eq!(
+            policy.effective_network_fs_policy(),
+            NetworkFsPolicy::DenyAll
+        );
+    }
+
+    #[test]
+    fn test_effective_network_fs_policy_legacy_deny_false() {
+        use mdmcp_policy::NetworkFsPolicy;
+        let policy = Policy {
+            version: 1,
+            network_fs_policy: None,
+            deny_network_fs: false,
+            allowed_roots: vec![],
+            write_rules: vec![],
+            commands: vec![],
+            logging: LoggingConfig::default(),
+            limits: LimitsConfig::default(),
+        };
+        assert_eq!(
+            policy.effective_network_fs_policy(),
+            NetworkFsPolicy::AllowAll
+        );
     }
 }

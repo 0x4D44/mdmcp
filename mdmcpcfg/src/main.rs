@@ -154,6 +154,14 @@ enum PolicyCommands {
         #[arg(long)]
         write: bool,
     },
+    /// Remove an allowed root directory
+    RemoveRoot {
+        /// Path to remove from allowed roots
+        path: String,
+        /// Also remove any write rule for this path
+        #[arg(long, short = 'w')]
+        include_write_rule: bool,
+    },
     /// Add a command to the catalog
     AddCommand {
         /// Command ID
@@ -196,6 +204,12 @@ enum PolicyCommands {
         /// Executable path
         #[arg(long)]
         exec: String,
+    },
+    /// Set network filesystem access policy
+    SetNetworkFs {
+        /// Policy mode: deny-all, allow-local-wsl, allow-all
+        #[arg(value_parser = ["deny-all", "allow-local-wsl", "allow-all"])]
+        mode: String,
     },
 }
 
@@ -268,6 +282,10 @@ async fn main() -> Result<()> {
             PolicyCommands::Validate { file } => policy::validate(file).await,
             PolicyCommands::Reload => policy::reload().await,
             PolicyCommands::AddRoot { path, write } => policy::add_root(path, write).await,
+            PolicyCommands::RemoveRoot {
+                path,
+                include_write_rule,
+            } => policy::remove_root(path, include_write_rule).await,
             PolicyCommands::AddCommand {
                 id,
                 exec,
@@ -278,6 +296,7 @@ async fn main() -> Result<()> {
             PolicyCommands::UnsetEnv { id, names } => policy::unset_env(id, names).await,
             PolicyCommands::ListEnv { id } => policy::list_env(id).await,
             PolicyCommands::SetExec { id, exec } => policy::set_exec(id, exec).await,
+            PolicyCommands::SetNetworkFs { mode } => policy::set_network_fs(mode).await,
         },
         Some(Commands::Doctor) => doctor::run().await,
         Some(Commands::Docs { build: _ }) => docs::build().await,

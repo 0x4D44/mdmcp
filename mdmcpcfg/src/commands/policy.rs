@@ -390,6 +390,135 @@ pub async fn add_root(path: String, enable_write: bool) -> Result<()> {
     Ok(())
 }
 
+/// Remove an allowed root directory from the policy
+pub async fn remove_root(path: String, include_write_rule: bool) -> Result<()> {
+    let paths = Paths::new()?;
+
+    if !paths.policy_file.exists() {
+        bail!(
+            "Policy file not found: {}. Run 'mdmcpcfg install' first.",
+            paths.policy_file.display()
+        );
+    }
+
+    let content = read_file(&paths.policy_file)?;
+    let mut policy: Value =
+        serde_yaml::from_str(&content).context("Failed to parse policy file")?;
+
+    let mut removed_root = false;
+    let mut removed_write_rule = false;
+
+    // Remove from allowed_roots
+    if let Some(allowed_roots) = policy
+        .get_mut("allowed_roots")
+        .and_then(|v| v.as_sequence_mut())
+    {
+        let original_len = allowed_roots.len();
+        allowed_roots.retain(|v| v.as_str() != Some(path.as_str()));
+        removed_root = allowed_roots.len() < original_len;
+    }
+
+    // Optionally remove from write_rules
+    if include_write_rule {
+        if let Some(write_rules) = policy
+            .get_mut("write_rules")
+            .and_then(|v| v.as_sequence_mut())
+        {
+            let original_len = write_rules.len();
+            write_rules.retain(|rule| {
+                rule.get("path")
+                    .and_then(|p| p.as_str())
+                    .map(|p| p != path)
+                    .unwrap_or(true)
+            });
+            removed_write_rule = write_rules.len() < original_len;
+        }
+    }
+
+    // Report results
+    if removed_root {
+        println!("✅ Removed allowed root: {}", path);
+    } else {
+        println!("ℹ️  Root not found: {}", path);
+    }
+
+    if include_write_rule {
+        if removed_write_rule {
+            println!("✅ Removed write rule for: {}", path);
+        } else {
+            println!("ℹ️  Write rule not found for: {}", path);
+        }
+    }
+
+    // Save if any changes were made
+    if removed_root || removed_write_rule {
+        let updated_content =
+            serde_yaml::to_string(&policy).context("Failed to serialize updated policy")?;
+        write_file(&paths.policy_file, &updated_content)?;
+        println!("✓ Policy file updated: {}", paths.policy_file.display());
+    }
+
+    Ok(())
+}
+
+/// Set network filesystem access policy
+pub async fn set_network_fs(mode: String) -> Result<()> {
+    let paths = Paths::new()?;
+
+    if !paths.policy_file.exists() {
+        bail!(
+            "Policy file not found: {}. Run 'mdmcpcfg install' first.",
+            paths.policy_file.display()
+        );
+    }
+
+    let content = read_file(&paths.policy_file)?;
+    let mut policy: Value =
+        serde_yaml::from_str(&content).context("Failed to parse policy file")?;
+
+    // Convert CLI mode to YAML value
+    let yaml_value = match mode.as_str() {
+        "deny-all" => "deny_all",
+        "allow-local-wsl" => "allow_local_wsl",
+        "allow-all" => "allow_all",
+        _ => bail!(
+            "Invalid mode: {}. Use deny-all, allow-local-wsl, or allow-all",
+            mode
+        ),
+    };
+
+    // Set the network_fs_policy field
+    if let Some(obj) = policy.as_mapping_mut() {
+        obj.insert(
+            Value::String("network_fs_policy".to_string()),
+            Value::String(yaml_value.to_string()),
+        );
+    }
+
+    // Warn if allow-all is being set
+    if mode == "allow-all" {
+        println!("⚠️  Warning: allow-all permits access to all network filesystems. This is NOT recommended for security.");
+    }
+
+    // Display current setting
+    let description = match mode.as_str() {
+        "deny-all" => "Block all network/UNC paths (most secure)",
+        "allow-local-wsl" => {
+            "Allow local WSL paths (\\\\wsl$\\, \\\\wsl.localhost\\) but deny remote"
+        }
+        "allow-all" => "Allow all network paths (least secure)",
+        _ => "",
+    };
+    println!("✅ Set network_fs_policy: {} - {}", yaml_value, description);
+
+    let updated_content =
+        serde_yaml::to_string(&policy).context("Failed to serialize updated policy")?;
+    write_file(&paths.policy_file, &updated_content)?;
+    println!("✓ Policy file updated: {}", paths.policy_file.display());
+
+    Ok(())
+}
+
 /// Add a command to the catalog
 pub async fn add_command(
     id: String,
@@ -977,6 +1106,109 @@ mod tests {
         super::validate_merged(&paths)
             .await
             .expect("merged validation ok");
+        std::env::remove_var("MDMCP_TEST_ROOT");
+    }
+
+    #[tokio::test]
+    async fn test_remove_root_existing() {
+        let _global = test_guard().lock().await;
+        {
+            let tmp = tempdir().unwrap();
+            let root = tmp.path().to_path_buf();
+            let _persisted = tmp.keep();
+            std::env::set_var("MDMCP_TEST_ROOT", &root);
+            let cfg_dir = root.join("config");
+            fs::create_dir_all(&cfg_dir).unwrap();
+            let user = cfg_dir.join("policy.user.yaml");
+            let initial = "version: 1\ndeny_network_fs: false\nallowed_roots:\n  - /tmp/test\n  - /tmp/other\nwrite_rules: []\ncommands: []\n";
+            fs::write(&user, initial).unwrap();
+        }
+
+        let root_env = std::env::var("MDMCP_TEST_ROOT").unwrap();
+        let root = std::path::PathBuf::from(root_env);
+        let user = root.join("config").join("policy.user.yaml");
+
+        // Remove existing root
+        super::remove_root("/tmp/test".into(), false)
+            .await
+            .expect("remove_root ok");
+
+        let updated = fs::read_to_string(&user).unwrap();
+        assert!(!updated.contains("/tmp/test"));
+        assert!(updated.contains("/tmp/other"));
+        std::env::remove_var("MDMCP_TEST_ROOT");
+    }
+
+    #[tokio::test]
+    async fn test_remove_root_nonexistent_is_idempotent() {
+        let _global = test_guard().lock().await;
+        {
+            let tmp = tempdir().unwrap();
+            let root = tmp.path().to_path_buf();
+            let _persisted = tmp.keep();
+            std::env::set_var("MDMCP_TEST_ROOT", &root);
+            let cfg_dir = root.join("config");
+            fs::create_dir_all(&cfg_dir).unwrap();
+            let user = cfg_dir.join("policy.user.yaml");
+            let initial = "version: 1\ndeny_network_fs: false\nallowed_roots:\n  - /tmp/other\nwrite_rules: []\ncommands: []\n";
+            fs::write(&user, initial).unwrap();
+        }
+
+        // Remove non-existent root - should not error
+        super::remove_root("/tmp/nonexistent".into(), false)
+            .await
+            .expect("remove_root should be idempotent");
+
+        std::env::remove_var("MDMCP_TEST_ROOT");
+    }
+
+    #[tokio::test]
+    async fn test_remove_root_with_write_rule() {
+        let _global = test_guard().lock().await;
+        {
+            let tmp = tempdir().unwrap();
+            let root = tmp.path().to_path_buf();
+            let _persisted = tmp.keep();
+            std::env::set_var("MDMCP_TEST_ROOT", &root);
+            let cfg_dir = root.join("config");
+            fs::create_dir_all(&cfg_dir).unwrap();
+            let user = cfg_dir.join("policy.user.yaml");
+            let initial = r#"version: 1
+deny_network_fs: false
+allowed_roots:
+  - /tmp/workspace
+write_rules:
+  - path: /tmp/workspace
+    recursive: true
+    max_file_bytes: 1000000
+commands: []
+"#;
+            fs::write(&user, initial).unwrap();
+        }
+
+        let root_env = std::env::var("MDMCP_TEST_ROOT").unwrap();
+        let root = std::path::PathBuf::from(root_env);
+        let user = root.join("config").join("policy.user.yaml");
+
+        // Remove root with write rule
+        super::remove_root("/tmp/workspace".into(), true)
+            .await
+            .expect("remove_root with write rule ok");
+
+        let updated = fs::read_to_string(&user).unwrap();
+        assert!(!updated.contains("/tmp/workspace"));
+        // Check that write_rules is now empty (or doesn't contain the path)
+        let policy: serde_yaml::Value = serde_yaml::from_str(&updated).unwrap();
+        let write_rules = policy
+            .get("write_rules")
+            .and_then(|v| v.as_sequence())
+            .unwrap();
+        assert!(
+            write_rules.is_empty()
+                || !write_rules
+                    .iter()
+                    .any(|r| { r.get("path").and_then(|p| p.as_str()) == Some("/tmp/workspace") })
+        );
         std::env::remove_var("MDMCP_TEST_ROOT");
     }
 }

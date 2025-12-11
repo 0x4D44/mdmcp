@@ -4,132 +4,101 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This repository contains `mdmcp` - a minimal, policy-driven Model Context Protocol (MCP) server written in Rust, plus a configuration CLI tool. The project provides a hardened MCP server that exposes only three capabilities (`fs.read`, `fs.write`, `cmd.run`) with strict policy-based access controls.
-
-**Current Status**: Active development with core server and policy system implemented (v0.3.6).
+This repository contains `mdmcp` - a minimal, policy-driven Model Context Protocol (MCP) server written in Rust, plus configuration and utility CLIs. The project provides a hardened MCP server that exposes only three capabilities (`fs.read`, `fs.write`, `cmd.run`) with strict policy-based access controls.
 
 ## Repository Structure
 
-This is a Cargo workspace containing:
+Cargo workspace with resolver v2:
 
-- **`mdmcpsrvr/`**: The core MCP server (Rust binary)
-- **`mdmcpcfg/`**: Configuration CLI tool for installing/managing the server and policies
-- **`crates/`**: Shared libraries (planned):
+- **`mdmcpsrvr/`**: Core MCP server (Rust binary)
+- **`mdmcpcfg/`**: Configuration CLI for installing/managing the server and policies
+- **`crates/`**: Shared libraries:
   - `mdmcp_policy/`: Policy types and validation
   - `mdmcp_common/`: MCP protocol types
-- **`mdmcp_design_spec_v_1.md`**: Complete technical specification
+- **`plugins/`**: Additional CLI tools:
+  - `mdaicli/`: Unified AI provider CLI with MCP integration
+  - `mdconfcli/`: Confluence CLI
+  - `mdjiracli/`: Jira CLI
+  - `mdmailcli/`: Mail CLI
+  - `mdslackcli/`: Slack CLI
 
 ## Development Commands
 
-### Build Commands
-- `cargo build --workspace` - Build all workspace members
-- `cargo build --release` - Release build 
-- `cargo run -p mdmcpsrvr -- --config policy.yaml --stdio` - Run MCP server
-- `cargo run -p mdmcpcfg -- <subcommand>` - Run configuration CLI
-- `cargo test --workspace` - Run all tests
-- `cargo test -p mdmcp_policy` - Run tests for specific package
-- `cargo clippy --workspace -- -D warnings` - Lint with strict warnings
-- `cargo fmt --all --check` - Check formatting across workspace
+```bash
+# Build
+cargo build --workspace
+cargo build --release
 
-### Schema Generation (when implemented)
-- `cargo run -p mdmcp_policy --example emit-schema > policy.schema.json` - Generate JSON schema
+# Run MCP server (stdio mode for testing)
+cargo run -p mdmcpsrvr -- --config tests/test_policy.yaml --stdio
+
+# Run CLIs
+cargo run -p mdmcpcfg -- --help
+cargo run -p mdaicli -- --help
+
+# Test
+cargo test --workspace --all-features
+cargo test -p mdmcp_policy              # Single package
+cargo test -p mdmcpsrvr -- e2e_stdio    # Single test
+
+# Lint & format
+cargo fmt --all
+cargo clippy --all-targets --all-features -D warnings
+```
 
 ## Architecture Overview
 
-### Core Components
+### MCP Server (`mdmcpsrvr/src/`)
 
-**MCP Server (`mdmcpsrvr`)**:
-- `main.rs` - Entry point, CLI argument handling
-- `rpc.rs` - JSON-RPC 2.0 over stdio transport layer
-- `server.rs` - MCP method handlers (`fs.read`, `fs.write`, `cmd.run`)
-- `policy.rs` - Policy loading, validation, and runtime enforcement
-- `fs_safety.rs` - Path normalization, network filesystem detection
-- `cmd_catalog.rs` - Command catalog validation and argument filtering
-- `sandbox.rs` - Subprocess isolation with resource limits
-- `audit.rs` - JSONL audit logging with redaction
-
-**Configuration CLI (`mdmcpcfg`)**:
-- `main.rs` - CLI interface using clap
-- `commands/install.rs` - Server binary installation/updates
-- `commands/policy.rs` - Policy file management
-- `commands/doctor.rs` - System diagnostics
-- `io.rs` - File I/O utilities
+| File | Purpose |
+|------|---------|
+| `main.rs` | Entry point, CLI args |
+| `rpc.rs` | JSON-RPC 2.0 over stdio (NDJSON) |
+| `server.rs` | MCP method handlers (`fs.read`, `fs.write`, `cmd.run`) |
+| `policy.rs` | Policy loading, validation, runtime enforcement |
+| `fs_safety.rs` | Path normalization, network FS detection |
+| `cmd_catalog.rs` | Command catalog validation, argument filtering |
+| `sandbox.rs` | Subprocess isolation with resource limits |
+| `audit.rs` | JSONL audit logging with redaction |
 
 ### Security Model
 
-The server enforces strict policies through:
-- **Path Controls**: All file operations constrained to `allowedRoots`
-- **Network FS Detection**: Blocks network filesystems unless explicitly allowed
-- **Command Catalog**: Only pre-approved commands with argument validation
-- **Resource Limits**: Timeout and output size constraints
-- **Audit Trail**: All operations logged with content hashing
+- **Path Controls**: File ops constrained to `allowed_roots`
+- **Network FS Detection**: Blocks NFS/SMB/UNC unless explicitly allowed
+- **Command Catalog**: Only pre-approved commands with validated arguments
+- **Resource Limits**: Per-command timeout and output size constraints
+- **No Shell Access**: Direct process execution only
 
-### Protocol Details
+### Key Design Principles
 
-- **Transport**: JSON-RPC 2.0 over stdio (NDJSON format)
-- **Methods**: `fs.read`, `fs.write`, `cmd.run`, plus `mcp.handshake` notification
-- **Policy-Driven**: All operations validated against YAML configuration
-- **Error Codes**: Domain-specific codes (`POLICY_DENY`, `TIMEOUT`, `OUTPUT_TRUNCATED`, etc.)
+1. **Minimal Attack Surface**: Only three capabilities exposed
+2. **Policy-First**: Every operation requires explicit permission
+3. **Platform Safety**: OS-specific filesystem and security controls (Unix rlimits, Windows Job Objects)
 
-## Code Quality Standards
+## Testing
 
-- **Zero Warnings**: All code must compile cleanly with no warnings
-- **Clippy Compliance**: Must pass `cargo clippy -- -D warnings`
-- **Formatting**: Code must be formatted with `cargo fmt`
-- **Documentation**: Public APIs and complex logic must be well-documented
-
-## Key Design Principles
-
-1. **Minimal Attack Surface**: Only three core capabilities exposed
-2. **Policy-First**: Every operation requires explicit policy permission
-3. **No Shell Access**: Direct process execution only, no shell interpretation
-4. **Platform Safety**: OS-specific filesystem and security controls
-5. **Comprehensive Auditing**: Full operation logging for security monitoring
-
-## Development Workflow
-
-Implementation progress:
-
-1. ✅ **Foundation**: Workspace setup, shared crates (`mdmcp_policy`, `mdmcp_common`)
-2. ✅ **Policy System**: YAML parsing, validation, schema generation  
-3. ✅ **MCP Server**: RPC plumbing, protocol handlers, security enforcement
-4. 🚧 **Configuration CLI**: Installation, policy management, diagnostics (partial)
-5. 🚧 **Testing**: Unit tests for security controls, E2E tests for full workflow (ongoing)
-
-### Working with Modified Files
-The repository currently has modifications in:
-- `crates/mdmcp_policy/src/lib.rs` - Core policy engine
-- `mdmcpcfg/src/commands/install.rs` - Installation command
-- `mdmcpsrvr/src/server.rs` - Main server implementation
-
-Use `git status` and `git diff` to review changes before committing.
-
-## Testing Strategy
-
-**Unit Tests**:
-- Path normalization and escaping prevention
-- Policy validation (malformed YAML, invalid regex patterns)
-- Command argument filtering
-- Network filesystem detection (platform-specific)
-
-**E2E Tests**:
-- Full server lifecycle (spawn, handshake, request/response)
-- Policy enforcement (allowed vs denied operations)
-- Resource limits (timeouts, output truncation)
-- Cross-platform compatibility
+E2E tests in `mdmcpsrvr/tests/`:
+- `e2e_stdio.rs` - Server lifecycle over stdio
+- `e2e_file_tools.rs` - fs.read/fs.write operations
+- `e2e_reload_policy.rs` - Hot policy reload
+- `e2e_resources_info.rs` - Resource introspection
 
 ## Platform Considerations
 
-- **Linux/macOS**: Uses `nix` crate for rlimits, process group management
-- **Windows**: Uses `windows-sys` for Job Objects, drive type detection
-- **Network FS Detection**: Platform-specific implementation in `fs_safety.rs`
+- **Linux/macOS**: `nix` crate for rlimits, process group management
+- **Windows**: `windows-sys` for Job Objects, drive type detection
+- **Network FS Detection**: Platform-specific in `fs_safety.rs`
 
-## Configuration Files
+## Policy Configuration
 
-- **`policy.yaml`**: Main configuration defining allowed operations
-- **`policy.schema.json`**: Generated JSON Schema for validation
-- **Platform paths**: 
-  - Linux: `~/.config/mdmcp/policy.yaml`
-  - macOS: `~/Library/Preferences/mdmcp/policy.yaml`
-  - Windows: `%APPDATA%\mdmcp\policy.yaml`
-- Remember to update the semver patch number with each change
+Policy file locations:
+- Linux: `~/.config/mdmcp/policy.yaml`
+- macOS: `~/Library/Preferences/mdmcp/policy.yaml`
+- Windows: `%APPDATA%\mdmcp\policy.yaml`
+
+Test policy: `tests/test_policy.yaml`
+Example template: `examples/policy.example.yaml`
+
+## Version Management
+
+Update version in `Cargo.toml` workspace section when making changes. Current: check `[workspace.package]` version field.

@@ -418,6 +418,7 @@ mod tests {
 
         let policy = Policy {
             version: 1,
+            network_fs_policy: None,
             deny_network_fs: false,
             allowed_roots: vec![test_root.to_string_lossy().to_string()],
             write_rules: vec![],

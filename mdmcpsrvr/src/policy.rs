@@ -312,6 +312,7 @@ commands:
         let temp_dir = tempdir().unwrap();
         let policy = Policy {
             version: 1,
+            network_fs_policy: None,
             deny_network_fs: true,
             allowed_roots: vec![temp_dir.path().to_string_lossy().to_string()],
             write_rules: vec![WriteRule {
@@ -356,6 +357,7 @@ commands:
         let temp_dir = tempdir().unwrap();
         let policy = Policy {
             version: 1,
+            network_fs_policy: None,
             deny_network_fs: false,
             allowed_roots: vec![temp_dir.path().to_string_lossy().to_string()],
             write_rules: vec![],

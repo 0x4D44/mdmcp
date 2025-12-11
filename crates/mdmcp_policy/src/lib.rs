@@ -31,12 +31,35 @@ pub enum PolicyError {
     PolicyDenied { rule: String },
 }
 
+/// Network filesystem access policy
+///
+/// Controls access to network filesystems and WSL UNC paths.
+/// - `DenyAll`: Block all network/UNC paths (most secure, default)
+/// - `AllowLocalWsl`: Allow local WSL paths (\\wsl$\, \\wsl.localhost\) but deny remote
+/// - `AllowAll`: Allow all network paths (least secure)
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkFsPolicy {
+    /// Deny all network/UNC paths (most secure, default)
+    #[default]
+    DenyAll,
+    /// Allow local WSL paths (\\wsl$\, \\wsl.localhost\) but deny remote network shares
+    AllowLocalWsl,
+    /// Allow all network paths (least secure)
+    AllowAll,
+}
+
 /// Root policy configuration structure
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 #[serde(deny_unknown_fields)]
 pub struct Policy {
     pub version: u32,
+    /// Network filesystem access policy (preferred over deny_network_fs)
+    #[serde(default)]
+    pub network_fs_policy: Option<NetworkFsPolicy>,
+    /// DEPRECATED: Use network_fs_policy instead. Kept for backward compatibility.
+    /// When network_fs_policy is None, this field is used to determine the effective policy.
     #[serde(default)]
     pub deny_network_fs: bool,
     pub allowed_roots: Vec<String>,
@@ -48,6 +71,25 @@ pub struct Policy {
     pub logging: LoggingConfig,
     #[serde(default)]
     pub limits: LimitsConfig,
+}
+
+impl Policy {
+    /// Get the effective network filesystem policy, handling backward compatibility.
+    ///
+    /// Priority:
+    /// 1. If `network_fs_policy` is set, use it
+    /// 2. Otherwise, map `deny_network_fs` to the equivalent policy
+    pub fn effective_network_fs_policy(&self) -> NetworkFsPolicy {
+        if let Some(policy) = self.network_fs_policy {
+            return policy;
+        }
+        // Fall back to legacy field
+        if self.deny_network_fs {
+            NetworkFsPolicy::DenyAll
+        } else {
+            NetworkFsPolicy::AllowAll
+        }
+    }
 }
 
 /// Write permission rule for specific paths
@@ -313,7 +355,10 @@ pub fn merge_policies(core: Policy, user: Policy) -> Policy {
     // Version: keep core's version (schemas must match)
     let version = core.version;
 
-    // deny_network_fs: user override wins
+    // network_fs_policy: user override wins if set, otherwise fall back to core
+    let network_fs_policy = user.network_fs_policy.or(core.network_fs_policy);
+
+    // deny_network_fs: user override wins (legacy field for backward compatibility)
     let deny_network_fs = user.deny_network_fs || core.deny_network_fs;
 
     // allowed_roots: union (preserve order: core first, then user uniques)
@@ -377,6 +422,7 @@ pub fn merge_policies(core: Policy, user: Policy) -> Policy {
 
     Policy {
         version,
+        network_fs_policy,
         deny_network_fs,
         allowed_roots,
         write_rules,
@@ -708,6 +754,7 @@ commands:
 
         let policy = Policy {
             version: 1,
+            network_fs_policy: None,
             deny_network_fs: false,
             allowed_roots: vec![test_root.to_string()],
             write_rules: vec![WriteRule {
@@ -733,6 +780,7 @@ commands:
 
         let policy = Policy {
             version: 1,
+            network_fs_policy: None,
             deny_network_fs: false,
             allowed_roots: vec![test_root.to_str().unwrap().to_string()],
             write_rules: vec![],
@@ -783,6 +831,7 @@ commands:
         let policy = CompiledPolicy {
             policy: Policy {
                 version: 1,
+                network_fs_policy: None,
                 deny_network_fs: false,
                 allowed_roots: vec![],
                 write_rules: vec![],

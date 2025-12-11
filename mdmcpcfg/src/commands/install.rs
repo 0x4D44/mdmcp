@@ -2752,6 +2752,7 @@ fn create_default_policy_content() -> Result<String> {
     // Build core policy
     let policy = Policy {
         version: 1,
+        network_fs_policy: None,
         deny_network_fs: true,
         // For safety, do not include default allowed roots in core policy
         allowed_roots: vec![],
@@ -2798,6 +2799,7 @@ fn create_minimal_user_policy_content() -> Result<String> {
     use mdmcp_policy::{LimitsConfig, LoggingConfig, Policy};
     let policy = Policy {
         version: 1,
+        network_fs_policy: None,
         deny_network_fs: true,
         allowed_roots: vec![],
         write_rules: vec![],
@@ -3082,6 +3084,7 @@ mod tests {
     }
 }
 /// Verification info for installed binary
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BinaryVerification {
     pub sha256: String,
