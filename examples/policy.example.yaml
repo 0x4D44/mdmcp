@@ -4,8 +4,11 @@
 
 version: 1
 
-# Deny access to network-mounted filesystems for security
-deny_network_fs: true
+# Network filesystem access policy:
+#   deny_all       - Block all network filesystems (most secure, default)
+#   allow_local_wsl - Allow WSL paths (\\wsl$\..., \\wsl.localhost\...) but block remote shares
+#   allow_all      - Allow all network filesystems (least secure)
+network_fs_policy: deny_all
 
 # Define allowed root directories for file operations
 # All file read/write operations must be within these directories

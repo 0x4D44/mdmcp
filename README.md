@@ -90,7 +90,10 @@ mdmcpcfg policy add-command echo --exec "/bin/echo" --allow hello --allow world
   `allowed_roots`. Any read/write outside is denied.
 - Write rules: Writes are permitted only where a `write_rules` entry exists
   (path, recursive, max file size, and optional auto‑create directories).
-- Network filesystems: Set `deny_network_fs: true` to prevent access on NFS/SMB/UNC mounts.
+- Network filesystems: `network_fs_policy` controls access to network mounts:
+  - `deny_all` (default): Block all network filesystems (NFS/SMB/UNC)
+  - `allow_local_wsl`: Allow local WSL paths (`\\wsl$\...`, `\\wsl.localhost\...`) but block remote shares
+  - `allow_all`: Allow all network filesystems (use with caution)
 - Command sandbox:
   - Working directory validation: `cwd_policy` controls where a command may run
     (e.g., within an allowed root or fixed to the exec directory).
@@ -111,7 +114,7 @@ limits, and a command catalog. A minimal example:
 
 ```yaml
 version: 1
-deny_network_fs: true
+network_fs_policy: deny_all  # deny_all | allow_local_wsl | allow_all
 allowed_roots:
   - "~/"            # Home directory
   - "C:/Users"      # Example on Windows
@@ -138,7 +141,11 @@ commands:
 Key sections
 
 - `version`: Policy schema version.
-- `deny_network_fs`: When true, blocks reads/writes on network filesystems.
+- `network_fs_policy`: Controls network filesystem access:
+  - `deny_all`: Block all network filesystems (default, most secure)
+  - `allow_local_wsl`: Allow WSL paths on Windows but block remote network shares
+  - `allow_all`: Allow all network filesystems (least secure)
+  - Note: The legacy `deny_network_fs` boolean is still supported for backward compatibility.
 - `allowed_roots`: Canonicalized roots that define where reads are allowed.
 - `write_rules`: Paths where writes are allowed, with limits.
 - `commands` (catalog):
@@ -194,7 +201,7 @@ Restart Claude Desktop after installation.
 
 ## Security Tips
 
-- Keep `deny_network_fs: true` unless you have a specific need.
+- Keep `network_fs_policy: deny_all` unless you have a specific need (use `allow_local_wsl` for WSL access on Windows).
 - Minimize `allowed_roots` and avoid broad patterns.
 - Prefer `allow_any_args: false` for commands like `del`, `rmdir`, `copy`, etc.
 - Review and prune `env_allowlist` to the minimum required.

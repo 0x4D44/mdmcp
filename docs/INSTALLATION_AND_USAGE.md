@@ -42,6 +42,6 @@ If `--server-target auto` (default) and WSL is available:
 
 ### Tips
 
-- Keep `deny_network_fs: true` unless explicitly required.
+- Keep `network_fs_policy: deny_all` unless explicitly required (use `allow_local_wsl` for WSL access on Windows).
 - Limit `allowed_roots` and prefer precise command rules.
 - Re-run `mdmcpcfg install` any time to refresh core policy defaults; user policy is never overwritten.

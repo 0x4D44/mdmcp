@@ -1571,7 +1571,7 @@ impl Server {
                 // Detailed policy format description (concise but informative)
                 let policy_format = r#"Policy v1 (YAML) fields:
 - version: number (required)
-- deny_network_fs: bool
+- network_fs_policy: deny_all | allow_local_wsl | allow_all (default: deny_all)
 - allowed_roots: [string path, ...] (required)
 - write_rules: [{ path, recursive, max_file_bytes, create_if_missing }]
 - commands: [{
@@ -1585,8 +1585,11 @@ impl Server {
 - limits: { max_read_bytes, max_cmd_concurrency }
 
 Notes:
-- mdmcpcfg installs a read-only core policy with deny_network_fs=true by default.
-- The effective deny_network_fs is core OR user; user policy cannot disable a core=true.
+- network_fs_policy controls network filesystem access:
+  - deny_all: Block all network filesystems (most secure, default)
+  - allow_local_wsl: Allow WSL paths (\\wsl$\...) but block remote network shares
+  - allow_all: Allow all network filesystems (least secure)
+- Legacy deny_network_fs boolean is still supported for backward compatibility.
 "#;
                 let summary = format!(
                     "mdmcpsrvr v{}\nBuild: {}\nPolicy hash: {}\nAllowed roots: {}\nCommands: {}\n\nPolicy format:\n{}",
@@ -1783,7 +1786,7 @@ Using the MCP Tools
 
 Policy Authoring Tips
 - Start from defaults (`mdmcpcfg install` creates a sensible policy).
-- Keep `deny_network_fs: true` unless you explicitly need network mounts.
+- Keep `network_fs_policy: deny_all` unless you need network access (use `allow_local_wsl` for WSL on Windows).
 - Restrict `allowed_roots` to the folders you actually use.
 - Prefer fixed/allow args for commands; use regex patterns carefully.
 - Never put secrets into logs.
@@ -2428,14 +2431,14 @@ Notes
                             "network_fs_denied",
                             "Network filesystem access is blocked by policy",
                             false,
-                            &["Set deny_network_fs: false in policy if needed"],
+                            &["Set network_fs_policy: allow_local_wsl (for WSL) or allow_all in policy"],
                         ),
                     );
                 }
                 return create_error_response(
                     id.clone(),
                     McpErrorCode::PolicyDeny,
-                    Some(format!("Network filesystem access blocked: {}. This policy blocks access to network-mounted filesystems (UNC paths, mapped network drives) for security reasons. To allow network filesystem access, set 'deny_network_fs: false' in your policy configuration.", path)),
+                    Some(format!("Network filesystem access blocked: {}. This policy blocks access to network-mounted filesystems (UNC paths, mapped network drives) for security reasons. To allow network filesystem access, set 'network_fs_policy: allow_local_wsl' (for WSL paths) or 'network_fs_policy: allow_all' in your policy configuration.", path)),
                     Some(data),
                 );
             }

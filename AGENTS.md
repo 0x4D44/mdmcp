@@ -32,6 +32,6 @@
 - PRs: include summary, scope, testing notes, and any platform considerations (Windows/Unix). Add screenshots/log snippets for CLI UX changes.
 
 ## Security & Configuration Tips
-- Policies gate all I/O and commands. Start from `examples/policy.example.yaml`; keep `deny_network_fs: true` unless explicitly needed.
+- Policies gate all I/O and commands. Start from `examples/policy.example.yaml`; keep `network_fs_policy: deny_all` unless explicitly needed (use `allow_local_wsl` for WSL access on Windows).
 - Limit `allowed_roots` and command args; avoid broad regexes. Do not log secrets.
 - Logs go to stderr; adjust with `--log-level` (e.g., `debug`).
