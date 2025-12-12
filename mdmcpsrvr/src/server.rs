@@ -216,6 +216,72 @@ impl Server {
         }
         base
     }
+    /// Build command catalog JSON (shared by get_command_catalog tool and resources/read)
+    async fn build_command_catalog_json(&self) -> String {
+        let policy = { self.policy.read().unwrap().clone() };
+        let mut items: Vec<serde_json::Value> = Vec::new();
+
+        // Create a temp catalog for validation/execution
+        let catalog = CommandCatalog::new(Arc::as_ref(&policy).clone());
+
+        for (id, compiled) in policy.commands_by_id.iter() {
+            let rule = &compiled.rule;
+            let mut obj = serde_json::json!({
+                "id": id,
+                "description": rule.description.clone().unwrap_or_default(),
+                "exec": rule.exec,
+                "platform": rule.platform,
+                "allow_any_args": rule.allow_any_args,
+                "args": {
+                    "fixed": rule.args.fixed,
+                    "allow": rule.args.allow,
+                    "patterns": rule.args.patterns.iter().map(|p| &p.value).collect::<Vec<_>>()
+                }
+            });
+
+            // Optional help capture
+            if rule.help_capture.enabled && !rule.help_capture.args.is_empty() {
+                let params = mdmcp_common::CmdRunParams {
+                    command_id: id.clone(),
+                    args: rule.help_capture.args.clone(),
+                    cwd: None,
+                    stdin: String::new(),
+                    env: std::collections::HashMap::new(),
+                    timeout_ms: Some(rule.help_capture.timeout_ms),
+                };
+                if let Ok(validated) = catalog.validate_command(&params) {
+                    if let Ok(exec) = catalog.execute_command(validated).await {
+                        let mut out = if !exec.stdout.is_empty() {
+                            exec.stdout
+                        } else {
+                            exec.stderr
+                        };
+                        let mut truncated = false;
+                        if out.len() as u64 > rule.help_capture.max_bytes {
+                            out = out
+                                .chars()
+                                .take(rule.help_capture.max_bytes as usize)
+                                .collect();
+                            truncated = true;
+                        }
+                        let cleaned = strip_ansi_fast(&out);
+                        let snippet = if truncated {
+                            format!("{}\n(truncated)", cleaned)
+                        } else {
+                            cleaned
+                        };
+                        if let Some(map) = obj.as_object_mut() {
+                            map.insert("help_snippet".to_string(), serde_json::json!(snippet));
+                        }
+                    }
+                }
+            }
+
+            items.push(obj);
+        }
+
+        serde_json::to_string_pretty(&items).unwrap_or_else(|_| "[]".to_string())
+    }
     /// Create new server instance with compiled policy
     pub async fn new(policy: Arc<CompiledPolicy>, config_path: PathBuf) -> Result<Self> {
         info!("Initializing MCP server");
@@ -598,6 +664,11 @@ impl Server {
                 {
                     "name": "list_resources",
                     "description": "List available MCP resources (use resources/read to access)",
+                    "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false}
+                },
+                {
+                    "name": "get_command_catalog",
+                    "description": "Get the full command catalog as JSON (workaround for clients that don't support resources/read)",
                     "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false}
                 }
             ]
@@ -1762,6 +1833,15 @@ Notes
                 self.auditor.log_success(ctx, SuccessDetails::default());
                 create_success_response(id, result)
             }
+            "get_command_catalog" => {
+                let json = self.build_command_catalog_json().await;
+                let result = serde_json::json!({
+                    "content": [{"type": "text", "text": json}],
+                    "isError": false
+                });
+                self.auditor.log_success(ctx, SuccessDetails::default());
+                create_success_response(id, result)
+            }
             _ => {
                 self.auditor
                     .log_error(ctx, &format!("Unknown tool: {}", tool_name), None);
@@ -2082,72 +2162,7 @@ Notes
             }
             "mdmcp://commands/catalog" => {
                 // Build a JSON array of command metadata with optional help snippets
-                let policy = { self.policy.read().unwrap().clone() };
-                let mut items: Vec<serde_json::Value> = Vec::new();
-
-                // Create a temp catalog for validation/execution
-                let catalog = CommandCatalog::new(Arc::as_ref(&policy).clone());
-
-                for (id, compiled) in policy.commands_by_id.iter() {
-                    let rule = &compiled.rule;
-                    let mut obj = serde_json::json!({
-                        "id": id,
-                        "description": rule.description.clone().unwrap_or_default(),
-                        "exec": rule.exec,
-                        "platform": rule.platform,
-                        "allow_any_args": rule.allow_any_args,
-                        "args": {
-                            "fixed": rule.args.fixed,
-                            "allow": rule.args.allow,
-                            "patterns": rule.args.patterns.iter().map(|p| &p.value).collect::<Vec<_>>()
-                        }
-                    });
-
-                    // Optional help capture
-                    if rule.help_capture.enabled && !rule.help_capture.args.is_empty() {
-                        let params = mdmcp_common::CmdRunParams {
-                            command_id: id.clone(),
-                            args: rule.help_capture.args.clone(),
-                            cwd: None,
-                            stdin: String::new(),
-                            env: std::collections::HashMap::new(),
-                            timeout_ms: Some(rule.help_capture.timeout_ms),
-                        };
-                        if let Ok(validated) = catalog.validate_command(&params) {
-                            if let Ok(exec) = catalog.execute_command(validated).await {
-                                let mut out = if !exec.stdout.is_empty() {
-                                    exec.stdout
-                                } else {
-                                    exec.stderr
-                                };
-                                let mut truncated = false;
-                                if out.len() as u64 > rule.help_capture.max_bytes {
-                                    out = out
-                                        .chars()
-                                        .take(rule.help_capture.max_bytes as usize)
-                                        .collect();
-                                    truncated = true;
-                                }
-                                let cleaned = strip_ansi_fast(&out);
-                                let snippet = if truncated {
-                                    format!("{}\n(truncated)", cleaned)
-                                } else {
-                                    cleaned
-                                };
-                                if let Some(map) = obj.as_object_mut() {
-                                    map.insert(
-                                        "help_snippet".to_string(),
-                                        serde_json::json!(snippet),
-                                    );
-                                }
-                            }
-                        }
-                    }
-
-                    items.push(obj);
-                }
-
-                let json = serde_json::to_string_pretty(&items).unwrap_or("[]".to_string());
+                let json = self.build_command_catalog_json().await;
                 vec![ResourceContent::Text {
                     text: json,
                     mime_type: Some("application/json".to_string()),
