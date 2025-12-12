@@ -408,7 +408,9 @@ pub fn is_dangerous_command(command_id: &str, args: &[String]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mdmcp_policy::{ArgPattern, ArgsPolicy, CommandRule, LimitsConfig, LoggingConfig, Policy};
+    use mdmcp_policy::{
+        ArgPattern, ArgsPolicy, CommandRule, LimitsConfig, LoggingConfig, NetworkFsPolicy, Policy,
+    };
     use std::collections::HashMap;
     use tempfile::tempdir;
 
@@ -418,8 +420,7 @@ mod tests {
 
         let policy = Policy {
             version: 1,
-            network_fs_policy: None,
-            deny_network_fs: false,
+            network_fs_policy: NetworkFsPolicy::DenyAll,
             allowed_roots: vec![test_root.to_string_lossy().to_string()],
             write_rules: vec![],
             commands: vec![CommandRule {

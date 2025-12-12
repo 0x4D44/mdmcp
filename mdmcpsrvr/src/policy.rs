@@ -56,9 +56,9 @@ async fn validate_policy_configuration(policy: &CompiledPolicy) -> Result<()> {
     }
 
     // Check for overly permissive settings
-    if !policy.policy.deny_network_fs {
+    if policy.policy.network_fs_policy == mdmcp_policy::NetworkFsPolicy::AllowAll {
         warnings.push(
-            "Network filesystem access is enabled - consider security implications".to_string(),
+            "Network filesystem access is fully enabled (allow_all) - consider security implications".to_string(),
         );
     }
 
@@ -162,7 +162,7 @@ pub fn get_policy_summary(policy: &CompiledPolicy) -> PolicySummary {
         write_rules_count: policy.write_rules_canonical.len(),
         total_commands: policy.commands_by_id.len(),
         command_count_by_platform,
-        network_fs_denied: policy.policy.deny_network_fs,
+        network_fs_policy: policy.policy.network_fs_policy,
         max_read_bytes: policy.policy.limits.max_read_bytes,
         max_cmd_concurrency: policy.policy.limits.max_cmd_concurrency,
     }
@@ -178,7 +178,7 @@ pub struct PolicySummary {
     pub write_rules_count: usize,
     pub total_commands: usize,
     pub command_count_by_platform: std::collections::HashMap<String, usize>,
-    pub network_fs_denied: bool,
+    pub network_fs_policy: mdmcp_policy::NetworkFsPolicy,
     pub max_read_bytes: u64,
     pub max_cmd_concurrency: u32,
 }
@@ -187,13 +187,13 @@ impl std::fmt::Display for PolicySummary {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Policy v{} (hash: {}): {} roots, {} write rules, {} commands, network_fs_denied: {}, limits: {}MB/{}conc",
+            "Policy v{} (hash: {}): {} roots, {} write rules, {} commands, network_fs: {:?}, limits: {}MB/{}conc",
             self.version,
             &self.policy_hash[..8],
             self.allowed_roots_count,
             self.write_rules_count,
             self.total_commands,
-            self.network_fs_denied,
+            self.network_fs_policy,
             self.max_read_bytes / 1024 / 1024,
             self.max_cmd_concurrency
         )
@@ -251,7 +251,9 @@ pub fn expand_policy_path(path: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mdmcp_policy::{ArgsPolicy, CommandRule, LimitsConfig, LoggingConfig, WriteRule};
+    use mdmcp_policy::{
+        ArgsPolicy, CommandRule, LimitsConfig, LoggingConfig, NetworkFsPolicy, WriteRule,
+    };
     use tempfile::{tempdir, NamedTempFile};
 
     #[tokio::test]
@@ -265,7 +267,7 @@ mod tests {
         std::fs::create_dir_all(&out_path).unwrap();
         let policy_content = format!(
             r#"version: 1
-deny_network_fs: true
+network_fs_policy: deny_all
 allowed_roots:
   - '{}'
 write_rules:
@@ -290,7 +292,10 @@ commands:
 
         let policy = result.unwrap();
         assert_eq!(policy.policy.version, 1);
-        assert!(policy.policy.deny_network_fs);
+        assert_eq!(
+            policy.policy.network_fs_policy,
+            mdmcp_policy::NetworkFsPolicy::DenyAll
+        );
         assert_eq!(
             policy.commands_by_id.len(),
             if cfg!(target_os = "linux") { 1 } else { 0 }
@@ -312,8 +317,7 @@ commands:
         let temp_dir = tempdir().unwrap();
         let policy = Policy {
             version: 1,
-            network_fs_policy: None,
-            deny_network_fs: true,
+            network_fs_policy: NetworkFsPolicy::DenyAll,
             allowed_roots: vec![temp_dir.path().to_string_lossy().to_string()],
             write_rules: vec![WriteRule {
                 path: temp_dir.path().to_string_lossy().to_string(),
@@ -345,11 +349,11 @@ commands:
         assert_eq!(summary.version, 1);
         assert_eq!(summary.allowed_roots_count, 1);
         assert_eq!(summary.write_rules_count, 1);
-        assert!(summary.network_fs_denied);
+        assert_eq!(summary.network_fs_policy, NetworkFsPolicy::DenyAll);
 
         let summary_str = summary.to_string();
         assert!(summary_str.contains("Policy v1"));
-        assert!(summary_str.contains("network_fs_denied: true"));
+        assert!(summary_str.contains("network_fs: DenyAll"));
     }
 
     #[test]
@@ -357,8 +361,7 @@ commands:
         let temp_dir = tempdir().unwrap();
         let policy = Policy {
             version: 1,
-            network_fs_policy: None,
-            deny_network_fs: false,
+            network_fs_policy: NetworkFsPolicy::AllowAll,
             allowed_roots: vec![temp_dir.path().to_string_lossy().to_string()],
             write_rules: vec![],
             commands: vec![],

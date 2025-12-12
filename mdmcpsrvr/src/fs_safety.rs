@@ -205,8 +205,8 @@ impl GuardedFileReader {
             });
         }
 
-        // Check for network filesystem using the effective policy
-        check_network_fs_access(&canonical, policy.policy.effective_network_fs_policy())?;
+        // Check for network filesystem using the policy
+        check_network_fs_access(&canonical, policy.policy.network_fs_policy)?;
 
         // Check if it's a special file
         if is_special_file(&canonical)? {
@@ -331,8 +331,8 @@ impl GuardedFileWriter {
             )));
         }
 
-        // Check for network filesystem using the effective policy
-        check_network_fs_access(&canonical, policy.policy.effective_network_fs_policy())?;
+        // Check for network filesystem using the policy
+        check_network_fs_access(&canonical, policy.policy.network_fs_policy)?;
 
         // Path allowance is implied by the write rule match above
 
@@ -569,36 +569,8 @@ pub(crate) fn is_network_fs(path: &Path) -> Result<bool, FsError> {
     Ok(is_network)
 }
 
-#[cfg(target_os = "windows")]
-pub(crate) fn is_network_fs(path: &Path) -> Result<bool, FsError> {
-    use std::ffi::OsStr;
-    use std::os::windows::ffi::OsStrExt;
-
-    let path_str = path.to_string_lossy();
-
-    // Check for UNC paths (but not Windows long path format \\?\)
-    if path_str.starts_with("\\\\") && !path_str.starts_with("\\\\?\\") {
-        return Ok(true);
-    }
-
-    // Check drive type for mapped network drives
-    if let Some(root) = path.ancestors().last() {
-        let root_wide: Vec<u16> = OsStr::new(&format!("{}\\", root.display()))
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
-
-        let drive_type =
-            unsafe { windows_sys::Win32::Storage::FileSystem::GetDriveTypeW(root_wide.as_ptr()) };
-
-        // DRIVE_REMOTE = 4
-        if drive_type == 4 {
-            return Ok(true);
-        }
-    }
-
-    Ok(false)
-}
+// Note: Windows network filesystem detection is handled by check_network_fs_access
+// which uses classify_unc_path() and is_mapped_network_drive() for finer-grained control.
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 pub(crate) fn is_network_fs(_path: &Path) -> Result<bool, FsError> {
@@ -638,8 +610,7 @@ mod tests {
 
         let policy = Policy {
             version: 1,
-            network_fs_policy: None,
-            deny_network_fs: false,
+            network_fs_policy: NetworkFsPolicy::DenyAll,
             allowed_roots: vec![test_root.to_string_lossy().to_string()],
             write_rules: vec![WriteRule {
                 path: test_root.to_string_lossy().to_string(),
@@ -663,8 +634,7 @@ mod tests {
         let temp_dir = temp_file.path().parent().unwrap();
         let policy = Policy {
             version: 1,
-            network_fs_policy: None,
-            deny_network_fs: false,
+            network_fs_policy: NetworkFsPolicy::DenyAll,
             allowed_roots: vec![temp_dir.to_string_lossy().to_string()],
             write_rules: vec![],
             commands: vec![],
@@ -790,63 +760,5 @@ mod tests {
             assert!(check_network_fs_access(&wsl_path, NetworkFsPolicy::AllowAll).is_ok());
             assert!(check_network_fs_access(&remote_path, NetworkFsPolicy::AllowAll).is_ok());
         }
-    }
-
-    // Tests for NetworkFsPolicy backward compatibility
-    #[test]
-    fn test_effective_network_fs_policy_new_field_takes_precedence() {
-        use mdmcp_policy::NetworkFsPolicy;
-        let policy = Policy {
-            version: 1,
-            network_fs_policy: Some(NetworkFsPolicy::AllowLocalWsl),
-            deny_network_fs: true, // This should be ignored
-            allowed_roots: vec![],
-            write_rules: vec![],
-            commands: vec![],
-            logging: LoggingConfig::default(),
-            limits: LimitsConfig::default(),
-        };
-        assert_eq!(
-            policy.effective_network_fs_policy(),
-            NetworkFsPolicy::AllowLocalWsl
-        );
-    }
-
-    #[test]
-    fn test_effective_network_fs_policy_legacy_deny_true() {
-        use mdmcp_policy::NetworkFsPolicy;
-        let policy = Policy {
-            version: 1,
-            network_fs_policy: None,
-            deny_network_fs: true,
-            allowed_roots: vec![],
-            write_rules: vec![],
-            commands: vec![],
-            logging: LoggingConfig::default(),
-            limits: LimitsConfig::default(),
-        };
-        assert_eq!(
-            policy.effective_network_fs_policy(),
-            NetworkFsPolicy::DenyAll
-        );
-    }
-
-    #[test]
-    fn test_effective_network_fs_policy_legacy_deny_false() {
-        use mdmcp_policy::NetworkFsPolicy;
-        let policy = Policy {
-            version: 1,
-            network_fs_policy: None,
-            deny_network_fs: false,
-            allowed_roots: vec![],
-            write_rules: vec![],
-            commands: vec![],
-            logging: LoggingConfig::default(),
-            limits: LimitsConfig::default(),
-        };
-        assert_eq!(
-            policy.effective_network_fs_policy(),
-            NetworkFsPolicy::AllowAll
-        );
     }
 }

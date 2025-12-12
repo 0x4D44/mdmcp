@@ -2552,7 +2552,8 @@ fn calculate_sha256<P: AsRef<Path>>(path: P) -> Result<String> {
 /// Create the default policy file content
 fn create_default_policy_content() -> Result<String> {
     use mdmcp_policy::{
-        ArgsPolicy, CommandRule, CwdPolicy, LimitsConfig, LoggingConfig, Policy, WriteRule,
+        ArgsPolicy, CommandRule, CwdPolicy, LimitsConfig, LoggingConfig, NetworkFsPolicy, Policy,
+        WriteRule,
     };
     let home_dir = dirs::home_dir().context("Failed to get home directory")?;
     let workspace_path = home_dir
@@ -2752,8 +2753,7 @@ fn create_default_policy_content() -> Result<String> {
     // Build core policy
     let policy = Policy {
         version: 1,
-        network_fs_policy: None,
-        deny_network_fs: true,
+        network_fs_policy: NetworkFsPolicy::DenyAll,
         // For safety, do not include default allowed roots in core policy
         allowed_roots: vec![],
         write_rules: vec![WriteRule {
@@ -2768,7 +2768,7 @@ fn create_default_policy_content() -> Result<String> {
     };
     let body = serde_yaml::to_string(&policy)?;
     // Prepend header comment
-    let header = "# MDMCP core policy (policy.core.yaml)\n#\n# This file contains vendor defaults installed by mdmcpcfg.\n# It WILL be overwritten on upgrade, and is set read-only to avoid accidental edits.\n#\n# To customize behavior, edit the user policy file instead: policy.user.yaml.\n# The user policy is merged over this core file and NEVER changed by upgrades.\n#\n# Security note: Certain security-critical flags in this core policy (e.g., deny_network_fs)\n# are enforced. The effective value is core OR user, so a core=true setting cannot be\n# disabled by the user policy.\n#\n";
+    let header = "# MDMCP core policy (policy.core.yaml)\n#\n# This file contains vendor defaults installed by mdmcpcfg.\n# It WILL be overwritten on upgrade, and is set read-only to avoid accidental edits.\n#\n# To customize behavior, edit the user policy file instead: policy.user.yaml.\n# The user policy is merged over this core file and NEVER changed by upgrades.\n#\n# Security note: network_fs_policy in core policy takes precedence.\n# User policy cannot weaken core security settings.\n#\n";
     let mut out = String::new();
     out.push_str(header);
     out.push_str(&body);
@@ -2796,11 +2796,10 @@ fn refresh_core_policy(paths: &Paths) -> Result<()> {
 
 /// Minimal user overlay policy: valid schema with empty lists
 fn create_minimal_user_policy_content() -> Result<String> {
-    use mdmcp_policy::{LimitsConfig, LoggingConfig, Policy};
+    use mdmcp_policy::{LimitsConfig, LoggingConfig, NetworkFsPolicy, Policy};
     let policy = Policy {
         version: 1,
-        network_fs_policy: None,
-        deny_network_fs: true,
+        network_fs_policy: NetworkFsPolicy::DenyAll,
         allowed_roots: vec![],
         write_rules: vec![],
         commands: vec![],
@@ -2808,7 +2807,7 @@ fn create_minimal_user_policy_content() -> Result<String> {
         limits: LimitsConfig::default(),
     };
     let body = serde_yaml::to_string(&policy)?;
-    let header = "# MDMCP user policy (policy.user.yaml)\n#\n# This file contains your local overrides and configuration.\n# mdmcpcfg install/upgrade NEVER changes this file.\n#\n# Tips:\n# - Add your allowed_roots and write_rules here.\n# - Add or adjust commands you want exposed to the MCP server.\n# - Keep deny_network_fs consistent with your security posture.\n#   Note: The core policy may enforce deny_network_fs=true; user policy cannot weaken it.\n#\n";
+    let header = "# MDMCP user policy (policy.user.yaml)\n#\n# This file contains your local overrides and configuration.\n# mdmcpcfg install/upgrade NEVER changes this file.\n#\n# Tips:\n# - Add your allowed_roots and write_rules here.\n# - Add or adjust commands you want exposed to the MCP server.\n# - Use `mdmcpcfg policy set-network-fs <mode>` to configure network filesystem access.\n#   Note: The core policy's network_fs_policy takes precedence; user policy cannot weaken it.\n#\n";
     let mut out = String::new();
     out.push_str(header);
     out.push_str(&body);

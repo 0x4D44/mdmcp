@@ -780,8 +780,8 @@ fn print_policy_summary(policy: &Value) -> Result<()> {
     }
 
     // Network FS policy
-    if let Some(deny_net_fs) = policy.get("deny_network_fs").and_then(|v| v.as_bool()) {
-        println!("   Network FS blocked: {}", deny_net_fs);
+    if let Some(net_policy) = policy.get("network_fs_policy").and_then(|v| v.as_str()) {
+        println!("   Network FS policy: {}", net_policy);
     }
 
     // Allowed roots
@@ -984,7 +984,7 @@ mod tests {
             let cfg_dir = root.join("config");
             fs::create_dir_all(&cfg_dir).unwrap();
             let user = cfg_dir.join("policy.user.yaml");
-            let initial = "version: 1\ndeny_network_fs: false\nallowed_roots: []\nwrite_rules: []\ncommands: []\n";
+            let initial = "version: 1\nnetwork_fs_policy: deny_all\nallowed_roots: []\nwrite_rules: []\ncommands: []\n";
             fs::write(&user, initial).unwrap();
         }
 
@@ -1014,7 +1014,7 @@ mod tests {
             let cfg_dir = root.join("config");
             fs::create_dir_all(&cfg_dir).unwrap();
             let user = cfg_dir.join("policy.user.yaml");
-            let initial = "version: 1\ndeny_network_fs: false\nallowed_roots: []\nwrite_rules: []\ncommands: []\n";
+            let initial = "version: 1\nnetwork_fs_policy: deny_all\nallowed_roots: []\nwrite_rules: []\ncommands: []\n";
             fs::write(&user, initial).unwrap();
         }
 
@@ -1063,7 +1063,7 @@ mod tests {
                 "/bin/echo"
             };
             let initial = format!(
-                "version: 1\ndeny_network_fs: false\nallowed_roots: []\nwrite_rules: []\ncommands:\n  - id: testcmd\n    exec: {}\n",
+                "version: 1\nnetwork_fs_policy: deny_all\nallowed_roots: []\nwrite_rules: []\ncommands:\n  - id: testcmd\n    exec: {}\n",
                 exec
             );
             fs::write(&user, initial).unwrap();
@@ -1098,8 +1098,8 @@ mod tests {
             fs::create_dir_all(&cfg_dir).unwrap();
             let user = cfg_dir.join("policy.user.yaml");
             let core = cfg_dir.join("policy.core.yaml");
-            fs::write(&user, "version: 1\ndeny_network_fs: false\nallowed_roots: []\nwrite_rules: []\ncommands: []\n").unwrap();
-            fs::write(&core, "version: 1\ndeny_network_fs: true\nallowed_roots: []\nwrite_rules: []\ncommands: []\n").unwrap();
+            fs::write(&user, "version: 1\nnetwork_fs_policy: deny_all\nallowed_roots: []\nwrite_rules: []\ncommands: []\n").unwrap();
+            fs::write(&core, "version: 1\nnetwork_fs_policy: deny_all\nallowed_roots: []\nwrite_rules: []\ncommands: []\n").unwrap();
         }
 
         let paths = Paths::new().unwrap();
@@ -1120,7 +1120,7 @@ mod tests {
             let cfg_dir = root.join("config");
             fs::create_dir_all(&cfg_dir).unwrap();
             let user = cfg_dir.join("policy.user.yaml");
-            let initial = "version: 1\ndeny_network_fs: false\nallowed_roots:\n  - /tmp/test\n  - /tmp/other\nwrite_rules: []\ncommands: []\n";
+            let initial = "version: 1\nnetwork_fs_policy: deny_all\nallowed_roots:\n  - /tmp/test\n  - /tmp/other\nwrite_rules: []\ncommands: []\n";
             fs::write(&user, initial).unwrap();
         }
 
@@ -1150,7 +1150,7 @@ mod tests {
             let cfg_dir = root.join("config");
             fs::create_dir_all(&cfg_dir).unwrap();
             let user = cfg_dir.join("policy.user.yaml");
-            let initial = "version: 1\ndeny_network_fs: false\nallowed_roots:\n  - /tmp/other\nwrite_rules: []\ncommands: []\n";
+            let initial = "version: 1\nnetwork_fs_policy: deny_all\nallowed_roots:\n  - /tmp/other\nwrite_rules: []\ncommands: []\n";
             fs::write(&user, initial).unwrap();
         }
 
@@ -1174,7 +1174,7 @@ mod tests {
             fs::create_dir_all(&cfg_dir).unwrap();
             let user = cfg_dir.join("policy.user.yaml");
             let initial = r#"version: 1
-deny_network_fs: false
+network_fs_policy: deny_all
 allowed_roots:
   - /tmp/workspace
 write_rules:

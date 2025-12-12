@@ -60,7 +60,9 @@ cargo run -p mdmcpcfg -- --help
   - `edit` — Open the policy in your default editor.
   - `validate --file <path>` — Validate a policy file against the schema.
   - `add-root <path> [--write]` — Add an allowed root; optionally allow writing.
+  - `remove-root <path> [-w]` — Remove an allowed root; `-w` also removes the write rule.
   - `add-command <id> --exec <path> [--allow <arg>] [--pattern <regex>]` — Add a command.
+  - `set-network-fs <mode>` — Set network filesystem policy (`deny-all`, `allow-local-wsl`, `allow-all`).
 - `doctor` — Run diagnostics.
 - `uninstall [--remove-policy] [--remove-claude-config]` — Remove the server and config.
 
@@ -81,6 +83,12 @@ mdmcpcfg policy add-root "C:/Users/you/mdmcp-workspace" --write
 
 # Add a command with fixed exec and basic allow list
 mdmcpcfg policy add-command echo --exec "/bin/echo" --allow hello --allow world
+
+# Remove an allowed root (and its write rule with -w)
+mdmcpcfg policy remove-root "C:/Users/you/old-project" -w
+
+# Allow WSL paths on Windows (for accessing \\wsl$\... or \\wsl.localhost\...)
+mdmcpcfg policy set-network-fs allow-local-wsl
 ```
 
 
@@ -170,10 +178,31 @@ CLI. The CLI’s `policy validate` command checks structure and common pitfalls.
 
 ## Claude Desktop Integration
 
-`mdmcpcfg install` can add a `mdmcp` entry to Claude Desktop’s configuration
+`mdmcpcfg install` can add a `mdmcp` entry to Claude Desktop's configuration
 so Claude can launch the server over stdio. Configuration locations are handled
 per‑platform by the CLI; a successful run prints the updated config path.
 Restart Claude Desktop after installation.
+
+
+## MCP Tools Exposed
+
+The server exposes these tools to MCP clients:
+
+| Tool | Description |
+|------|-------------|
+| `read_lines` / `read_bytes` | Read files within allowed roots |
+| `write_file` | Write files within allowed roots (requires write rule) |
+| `run_command` | Execute commands from the policy catalog |
+| `list_directory` / `stat_path` | Directory listing and file info |
+| `list_accessible_directories` | Show allowed roots and write paths |
+| `get_command_catalog` | Get full command catalog as JSON (useful when `resources/read` unavailable) |
+| `server_info` | Version, policy summary, and policy format reference |
+| `reload_policy` | Reload policy without restarting |
+| `get_datetime` / `get_working_directory` / `set_working_directory` | Utility tools |
+
+The server also exposes MCP resources (`mdmcp://commands/catalog`, `mdmcp://doc/tools`,
+`mdmcp://server/capabilities`) via `resources/read`, but some clients (e.g., Claude Desktop)
+don't yet support this—use `get_command_catalog` as a workaround.
 
 
 ## Development

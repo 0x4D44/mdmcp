@@ -52,16 +52,11 @@ pub enum NetworkFsPolicy {
 /// Root policy configuration structure
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
-#[serde(deny_unknown_fields)]
 pub struct Policy {
     pub version: u32,
-    /// Network filesystem access policy (preferred over deny_network_fs)
+    /// Network filesystem access policy
     #[serde(default)]
-    pub network_fs_policy: Option<NetworkFsPolicy>,
-    /// DEPRECATED: Use network_fs_policy instead. Kept for backward compatibility.
-    /// When network_fs_policy is None, this field is used to determine the effective policy.
-    #[serde(default)]
-    pub deny_network_fs: bool,
+    pub network_fs_policy: NetworkFsPolicy,
     pub allowed_roots: Vec<String>,
     #[serde(default)]
     pub write_rules: Vec<WriteRule>,
@@ -71,25 +66,6 @@ pub struct Policy {
     pub logging: LoggingConfig,
     #[serde(default)]
     pub limits: LimitsConfig,
-}
-
-impl Policy {
-    /// Get the effective network filesystem policy, handling backward compatibility.
-    ///
-    /// Priority:
-    /// 1. If `network_fs_policy` is set, use it
-    /// 2. Otherwise, map `deny_network_fs` to the equivalent policy
-    pub fn effective_network_fs_policy(&self) -> NetworkFsPolicy {
-        if let Some(policy) = self.network_fs_policy {
-            return policy;
-        }
-        // Fall back to legacy field
-        if self.deny_network_fs {
-            NetworkFsPolicy::DenyAll
-        } else {
-            NetworkFsPolicy::AllowAll
-        }
-    }
 }
 
 /// Write permission rule for specific paths
@@ -355,11 +331,16 @@ pub fn merge_policies(core: Policy, user: Policy) -> Policy {
     // Version: keep core's version (schemas must match)
     let version = core.version;
 
-    // network_fs_policy: user override wins if set, otherwise fall back to core
-    let network_fs_policy = user.network_fs_policy.or(core.network_fs_policy);
-
-    // deny_network_fs: user override wins (legacy field for backward compatibility)
-    let deny_network_fs = user.deny_network_fs || core.deny_network_fs;
+    // network_fs_policy: core takes precedence (user cannot weaken security)
+    // If core is DenyAll, user cannot change to AllowLocalWsl or AllowAll
+    // If core is AllowLocalWsl, user cannot change to AllowAll
+    let network_fs_policy = match (core.network_fs_policy, user.network_fs_policy) {
+        (NetworkFsPolicy::DenyAll, _) => NetworkFsPolicy::DenyAll,
+        (NetworkFsPolicy::AllowLocalWsl, NetworkFsPolicy::AllowAll) => {
+            NetworkFsPolicy::AllowLocalWsl
+        }
+        (_, user_policy) => user_policy,
+    };
 
     // allowed_roots: union (preserve order: core first, then user uniques)
     let mut allowed_roots = core.allowed_roots.clone();
@@ -423,7 +404,6 @@ pub fn merge_policies(core: Policy, user: Policy) -> Policy {
     Policy {
         version,
         network_fs_policy,
-        deny_network_fs,
         allowed_roots,
         write_rules,
         commands,
@@ -724,7 +704,7 @@ mod tests {
     fn test_policy_yaml_parsing() {
         let yaml = r#"
 version: 1
-deny_network_fs: true
+network_fs_policy: deny_all
 allowed_roots:
   - "~/test"
 write_rules:
@@ -741,10 +721,26 @@ commands:
 
         let policy = Policy::from_yaml(yaml).unwrap();
         assert_eq!(policy.version, 1);
-        assert!(policy.deny_network_fs);
+        assert_eq!(policy.network_fs_policy, NetworkFsPolicy::DenyAll);
         assert_eq!(policy.allowed_roots.len(), 1);
         assert_eq!(policy.commands.len(), 1);
         assert_eq!(policy.commands[0].id, "test");
+    }
+
+    #[test]
+    fn test_policy_yaml_parsing_ignores_unknown_fields() {
+        // Old policies with deny_network_fs should parse without error (field is ignored)
+        let yaml = r#"
+version: 1
+deny_network_fs: true
+allowed_roots:
+  - "~/test"
+"#;
+
+        let policy = Policy::from_yaml(yaml).unwrap();
+        assert_eq!(policy.version, 1);
+        // deny_network_fs is ignored, defaults to DenyAll
+        assert_eq!(policy.network_fs_policy, NetworkFsPolicy::DenyAll);
     }
 
     #[test]
@@ -754,8 +750,7 @@ commands:
 
         let policy = Policy {
             version: 1,
-            network_fs_policy: None,
-            deny_network_fs: false,
+            network_fs_policy: NetworkFsPolicy::DenyAll,
             allowed_roots: vec![test_root.to_string()],
             write_rules: vec![WriteRule {
                 path: test_root.to_string(),
@@ -780,8 +775,7 @@ commands:
 
         let policy = Policy {
             version: 1,
-            network_fs_policy: None,
-            deny_network_fs: false,
+            network_fs_policy: NetworkFsPolicy::DenyAll,
             allowed_roots: vec![test_root.to_str().unwrap().to_string()],
             write_rules: vec![],
             commands: vec![],
@@ -831,8 +825,7 @@ commands:
         let policy = CompiledPolicy {
             policy: Policy {
                 version: 1,
-                network_fs_policy: None,
-                deny_network_fs: false,
+                network_fs_policy: NetworkFsPolicy::DenyAll,
                 allowed_roots: vec![],
                 write_rules: vec![],
                 commands: vec![],

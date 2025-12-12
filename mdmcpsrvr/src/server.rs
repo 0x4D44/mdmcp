@@ -1208,15 +1208,16 @@ impl Server {
                                 None,
                             );
                         }
-                        if policy.policy.deny_network_fs {
-                            if let Ok(true) = crate::fs_safety::is_network_fs(&canon) {
-                                return create_error_response(
-                                    id,
-                                    McpErrorCode::PolicyDeny,
-                                    Some("Network filesystem denied".to_string()),
-                                    None,
-                                );
-                            }
+                        if let Err(e) = crate::fs_safety::check_network_fs_access(
+                            &canon,
+                            policy.policy.network_fs_policy,
+                        ) {
+                            return create_error_response(
+                                id,
+                                McpErrorCode::PolicyDeny,
+                                Some(format!("Network filesystem access denied: {}", e)),
+                                None,
+                            );
                         }
                         match std::fs::metadata(&canon) {
                             Ok(m) => {
@@ -1302,15 +1303,16 @@ impl Server {
                                 None,
                             );
                         }
-                        if policy.policy.deny_network_fs {
-                            if let Ok(true) = crate::fs_safety::is_network_fs(&canon) {
-                                return create_error_response(
-                                    id,
-                                    McpErrorCode::PolicyDeny,
-                                    Some("Network filesystem denied".to_string()),
-                                    None,
-                                );
-                            }
+                        if let Err(e) = crate::fs_safety::check_network_fs_access(
+                            &canon,
+                            policy.policy.network_fs_policy,
+                        ) {
+                            return create_error_response(
+                                id,
+                                McpErrorCode::PolicyDeny,
+                                Some(format!("Network filesystem access denied: {}", e)),
+                                None,
+                            );
                         }
                         match std::fs::read_dir(&canon) {
                             Ok(iter) => {
@@ -1589,7 +1591,7 @@ Notes:
   - deny_all: Block all network filesystems (most secure, default)
   - allow_local_wsl: Allow WSL paths (\\wsl$\...) but block remote network shares
   - allow_all: Allow all network filesystems (least secure)
-- Legacy deny_network_fs boolean is still supported for backward compatibility.
+- Use `mdmcpcfg policy set-network-fs <mode>` to configure.
 "#;
                 let summary = format!(
                     "mdmcpsrvr v{}\nBuild: {}\nPolicy hash: {}\nAllowed roots: {}\nCommands: {}\n\nPolicy format:\n{}",
@@ -3279,7 +3281,9 @@ fn generate_request_id(rpc_id: &RpcId) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mdmcp_policy::{ArgsPolicy, CommandRule, LimitsConfig, LoggingConfig, Policy, WriteRule};
+    use mdmcp_policy::{
+        ArgsPolicy, CommandRule, LimitsConfig, LoggingConfig, NetworkFsPolicy, Policy, WriteRule,
+    };
     use std::collections::HashMap;
     use tempfile::{tempdir, NamedTempFile};
     async fn create_test_server() -> Server {
@@ -3289,8 +3293,7 @@ mod tests {
         let _persisted = temp_dir.keep();
         let policy = Policy {
             version: 1,
-            network_fs_policy: None,
-            deny_network_fs: false,
+            network_fs_policy: NetworkFsPolicy::DenyAll,
             allowed_roots: vec![test_root.to_string_lossy().to_string()],
             write_rules: vec![WriteRule {
                 path: test_root.to_string_lossy().to_string(),
@@ -3652,7 +3655,7 @@ mod tests {
         // Build a minimal valid policy YAML pointing to the same allowed root
         let root0 = { server.policy.read().unwrap().allowed_roots_canonical[0].clone() };
         let yaml = format!(
-            "version: 1\ndeny_network_fs: false\nallowed_roots:\n  - {}\nwrite_rules: []\ncommands: []\n",
+            "version: 1\nnetwork_fs_policy: deny_all\nallowed_roots:\n  - {}\nwrite_rules: []\ncommands: []\n",
             root0.to_string_lossy()
         );
         // Sanity-check compile independently
