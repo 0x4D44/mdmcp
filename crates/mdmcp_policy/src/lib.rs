@@ -331,16 +331,9 @@ pub fn merge_policies(core: Policy, user: Policy) -> Policy {
     // Version: keep core's version (schemas must match)
     let version = core.version;
 
-    // network_fs_policy: core takes precedence (user cannot weaken security)
-    // If core is DenyAll, user cannot change to AllowLocalWsl or AllowAll
-    // If core is AllowLocalWsl, user cannot change to AllowAll
-    let network_fs_policy = match (core.network_fs_policy, user.network_fs_policy) {
-        (NetworkFsPolicy::DenyAll, _) => NetworkFsPolicy::DenyAll,
-        (NetworkFsPolicy::AllowLocalWsl, NetworkFsPolicy::AllowAll) => {
-            NetworkFsPolicy::AllowLocalWsl
-        }
-        (_, user_policy) => user_policy,
-    };
+    // network_fs_policy: user takes precedence over core defaults
+    // Core policy sets secure default (DenyAll), user can relax to AllowLocalWsl or AllowAll
+    let network_fs_policy = user.network_fs_policy;
 
     // allowed_roots: union (preserve order: core first, then user uniques)
     let mut allowed_roots = core.allowed_roots.clone();
@@ -505,18 +498,69 @@ fn expand_path(path: &str) -> Result<PathBuf> {
         let suffix = &path[2..];
         return Ok(home.join(suffix));
     }
-    Ok(PathBuf::from(path))
+    // Normalize WSL UNC paths on Windows (backslash -> forward slash for Rust compatibility)
+    #[cfg(windows)]
+    {
+        let normalized = normalize_wsl_path(path);
+        Ok(PathBuf::from(normalized))
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(PathBuf::from(path))
+    }
+}
+
+/// Normalize WSL UNC paths from backslash to forward slash format.
+/// Rust's std::path on Windows doesn't handle backslash WSL paths correctly -
+/// Path::exists() returns false for `\\wsl.localhost\...` but true for `//wsl.localhost/...`.
+#[cfg(windows)]
+fn normalize_wsl_path(path: &str) -> String {
+    let lower = path.to_lowercase();
+    // Check for WSL UNC paths with backslashes
+    if lower.starts_with("\\\\wsl$\\") || lower.starts_with("\\\\wsl.localhost\\") {
+        // Convert backslashes to forward slashes for Rust compatibility
+        path.replace('\\', "/")
+    } else {
+        path.to_string()
+    }
 }
 
 fn canonicalize_path(path: &Path) -> Result<PathBuf> {
-    dunce::canonicalize(path)
+    // Normalize WSL paths first (convert backslash to forward slash for Rust compatibility)
+    let path = normalize_wsl_path_buf(path);
+    dunce::canonicalize(&path)
         .with_context(|| format!("Failed to canonicalize path: {}", path.display()))
+}
+
+/// Normalize WSL UNC paths from backslash to forward slash format (Path version).
+/// Rust's std::path on Windows doesn't handle backslash WSL paths correctly -
+/// Path::exists() returns false for `\\wsl.localhost\...` but true for `//wsl.localhost/...`.
+#[cfg(windows)]
+fn normalize_wsl_path_buf(path: &Path) -> PathBuf {
+    let path_str = path.to_string_lossy();
+    let lower = path_str.to_lowercase();
+    // Check for WSL UNC paths with backslashes
+    if lower.starts_with("\\\\wsl$\\") || lower.starts_with("\\\\wsl.localhost\\") {
+        // Convert backslashes to forward slashes for Rust compatibility
+        PathBuf::from(path_str.replace('\\', "/"))
+    } else {
+        path.to_path_buf()
+    }
+}
+
+#[cfg(not(windows))]
+fn normalize_wsl_path_buf(path: &Path) -> PathBuf {
+    path.to_path_buf()
 }
 
 /// Canonicalize a path that may not yet exist (used for write rules).
 /// If `create_if_missing` is true and the path doesn't exist, canonicalize the
 /// nearest existing ancestor and rejoin the remaining components.
 fn canonicalize_path_for_write_rule(path: &Path, create_if_missing: bool) -> Result<PathBuf> {
+    // Normalize WSL paths first (convert backslash to forward slash for Rust compatibility)
+    let path = normalize_wsl_path_buf(path);
+    let path = path.as_path();
+
     if path.exists() {
         return canonicalize_path(path);
     }

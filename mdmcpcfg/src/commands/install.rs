@@ -2768,7 +2768,7 @@ fn create_default_policy_content() -> Result<String> {
     };
     let body = serde_yaml::to_string(&policy)?;
     // Prepend header comment
-    let header = "# MDMCP core policy (policy.core.yaml)\n#\n# This file contains vendor defaults installed by mdmcpcfg.\n# It WILL be overwritten on upgrade, and is set read-only to avoid accidental edits.\n#\n# To customize behavior, edit the user policy file instead: policy.user.yaml.\n# The user policy is merged over this core file and NEVER changed by upgrades.\n#\n# Security note: network_fs_policy in core policy takes precedence.\n# User policy cannot weaken core security settings.\n#\n";
+    let header = "# MDMCP core policy (policy.core.yaml)\n#\n# This file contains vendor defaults installed by mdmcpcfg.\n# It WILL be overwritten on upgrade, and is set read-only to avoid accidental edits.\n#\n# To customize behavior, edit the user policy file instead: policy.user.yaml.\n# The user policy is merged over this core file and NEVER changed by upgrades.\n#\n# Note: User policy's network_fs_policy overrides core defaults.\n# Use `mdmcpcfg policy set-network-fs <mode>` to configure.\n#\n";
     let mut out = String::new();
     out.push_str(header);
     out.push_str(&body);
@@ -2807,7 +2807,7 @@ fn create_minimal_user_policy_content() -> Result<String> {
         limits: LimitsConfig::default(),
     };
     let body = serde_yaml::to_string(&policy)?;
-    let header = "# MDMCP user policy (policy.user.yaml)\n#\n# This file contains your local overrides and configuration.\n# mdmcpcfg install/upgrade NEVER changes this file.\n#\n# Tips:\n# - Add your allowed_roots and write_rules here.\n# - Add or adjust commands you want exposed to the MCP server.\n# - Use `mdmcpcfg policy set-network-fs <mode>` to configure network filesystem access.\n#   Note: The core policy's network_fs_policy takes precedence; user policy cannot weaken it.\n#\n";
+    let header = "# MDMCP user policy (policy.user.yaml)\n#\n# This file contains your local overrides and configuration.\n# mdmcpcfg install/upgrade NEVER changes this file.\n#\n# Tips:\n# - Add your allowed_roots and write_rules here.\n# - Add or adjust commands you want exposed to the MCP server.\n# - Use `mdmcpcfg policy set-network-fs <mode>` to configure network filesystem access.\n#   Your setting here overrides the core policy default.\n#\n";
     let mut out = String::new();
     out.push_str(header);
     out.push_str(&body);

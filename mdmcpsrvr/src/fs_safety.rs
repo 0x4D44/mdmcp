@@ -421,8 +421,33 @@ impl Drop for GuardedFileWriter {
     }
 }
 
+/// Normalize WSL UNC paths from backslash to forward slash format.
+/// Rust's std::path on Windows doesn't handle backslash WSL paths correctly -
+/// Path::exists() returns false for `\\wsl.localhost\...` but true for `//wsl.localhost/...`.
+#[cfg(windows)]
+fn normalize_wsl_path(path: &Path) -> PathBuf {
+    let path_str = path.to_string_lossy();
+    let lower = path_str.to_lowercase();
+    // Check for WSL UNC paths with backslashes
+    if lower.starts_with("\\\\wsl$\\") || lower.starts_with("\\\\wsl.localhost\\") {
+        // Convert backslashes to forward slashes for Rust compatibility
+        PathBuf::from(path_str.replace('\\', "/"))
+    } else {
+        path.to_path_buf()
+    }
+}
+
+#[cfg(not(windows))]
+fn normalize_wsl_path(path: &Path) -> PathBuf {
+    path.to_path_buf()
+}
+
 /// Canonicalize path, handling the case where the path might not exist
 pub(crate) fn canonicalize_path(path: &Path) -> Result<PathBuf> {
+    // Normalize WSL paths first (convert backslash to forward slash for Rust compatibility)
+    let path = normalize_wsl_path(path);
+    let path = path.as_path();
+
     if let Ok(canonical) = dunce::canonicalize(path) {
         Ok(canonical)
     } else {
@@ -445,6 +470,10 @@ pub(crate) fn canonicalize_path(path: &Path) -> Result<PathBuf> {
 
 /// Canonicalize path for write operations, handling non-existent files
 fn canonicalize_path_for_write(path: &Path, create: bool) -> Result<PathBuf, FsError> {
+    // Normalize WSL paths first (convert backslash to forward slash for Rust compatibility)
+    let path = normalize_wsl_path(path);
+    let path = path.as_path();
+
     if path.exists() {
         return dunce::canonicalize(path).map_err(FsError::Io);
     }
