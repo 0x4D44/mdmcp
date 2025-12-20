@@ -40,6 +40,7 @@ cargo run -p mdaicli -- --help
 cargo test --workspace --all-features
 cargo test -p mdmcp_policy              # Single package
 cargo test -p mdmcpsrvr -- e2e_stdio    # Single test
+python tests/test_new_methods.py        # Smoke test (Windows)
 
 # Lint & format
 cargo fmt --all
@@ -98,6 +99,21 @@ Policy file locations:
 
 Test policy: `tests/test_policy.yaml`
 Example template: `examples/policy.example.yaml`
+
+## MCP Tools Exposed
+
+The server exposes these tools to MCP clients:
+
+| Tool | Description |
+|------|-------------|
+| `read_lines` / `read_bytes` | Read files within allowed roots |
+| `write_file` | Write files within allowed roots (requires write rule) |
+| `run_command` | Execute commands from the policy catalog |
+| `list_directory` / `stat_path` | Directory listing and file info |
+| `list_accessible_directories` | Show allowed roots and write paths |
+| `get_command_catalog` | Get full command catalog as JSON |
+| `server_info` | Version, policy summary, policy format reference |
+| `reload_policy` | Reload policy without restarting |
 
 ## Version Management
 

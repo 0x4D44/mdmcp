@@ -96,7 +96,7 @@ pub async fn reload() -> Result<()> {
                     .args(["/C", "start \"\" Claude.exe"]) // empty title
                     .status();
                 println!("✅ Asked Windows host to restart Claude Desktop");
-                Ok(())
+                return Ok(());
             }
         }
         println!(

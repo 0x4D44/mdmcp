@@ -21,6 +21,7 @@ pub enum FsError {
     PathNotAllowed { path: String },
     #[error("Network filesystem access denied: {path}")]
     NetworkFsDenied { path: String },
+    #[cfg(target_os = "windows")]
     #[error("WSL path access denied (policy: deny_all): {path}")]
     WslPathDenied { path: String },
     #[error("Special file not supported: {path}")]
@@ -34,6 +35,7 @@ pub enum FsError {
 }
 
 /// Classification of UNC paths (Windows only)
+#[cfg(target_os = "windows")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UncPathType {
     /// Local WSL filesystem (\\wsl$\ or \\wsl.localhost\)
