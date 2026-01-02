@@ -738,4 +738,70 @@ mod tests {
         assert!(result.truncated);
         assert!(result.stdout.len() <= 100);
     }
+
+    #[tokio::test]
+    async fn test_timeout_enforcement() {
+        // Sleep command
+        let (exe, args) = if cfg!(windows) {
+            // Windows ping hack for sleep
+            (
+                "ping",
+                vec!["127.0.0.1".to_string(), "-n".to_string(), "3".to_string()],
+            )
+        } else {
+            ("sleep", vec!["2".to_string()])
+        };
+
+        let config = ExecutionConfig {
+            executable: PathBuf::from(exe),
+            args,
+            cwd: None,
+            env: HashMap::new(),
+            stdin: String::new(),
+            timeout_ms: 100, // Very short timeout
+            max_output_bytes: 1000,
+        };
+
+        let result = execute_command(config).await;
+        assert!(matches!(result, Err(SandboxError::Timeout { .. })));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn test_windows_env_expansion_and_case_sensitivity() {
+        // Set a temp env var for this test
+        // Note: setting env vars in tests is not thread-safe if other tests read them concurrently.
+        // We use a unique name to minimize collision risk.
+        let key = "MDMCP_TEST_VAR";
+        let val = "ExpansionWorks";
+        std::env::set_var(key, val);
+
+        let mut requested = HashMap::new();
+        // Request variable with different casing and using % expansion
+        requested.insert("mdmcp_test_var".to_string(), format!("%{}%", key));
+
+        let allowlist = vec![key.to_string()];
+
+        let filtered = filter_environment(&requested, &allowlist);
+
+        // Cleanup
+        std::env::remove_var(key);
+
+        // It should have found the value via expansion or system lookup
+        // The key in the output map matches the allowlist casing (which is "MDMCP_TEST_VAR")
+        assert_eq!(filtered.get(key), Some(&val.to_string()));
+    }
+
+    #[test]
+    fn test_env_allowlist_preserves_system_values() {
+        let key = "PATH"; // Usually exists
+        let requested = HashMap::new(); // Empty request
+        let allowlist = vec![key.to_string()];
+
+        let filtered = filter_environment(&requested, &allowlist);
+
+        // Should pull from system
+        assert!(filtered.contains_key(key));
+        assert!(!filtered.get(key).unwrap().is_empty());
+    }
 }

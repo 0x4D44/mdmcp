@@ -178,6 +178,9 @@ fn save_file(cf: &CredFile) -> Result<(), AppError> {
 }
 
 fn prompt_passphrase(confirm_if_new: bool) -> Result<String, AppError> {
+    if let Ok(p) = std::env::var("MDAICLI_TEST_PASSPHRASE") {
+        return Ok(p);
+    }
     eprint!("Enter credentials store passphrase: ");
     let pass = read_password().map_err(|e| AppError {
         kind: ErrorKind::Credential,
@@ -223,7 +226,7 @@ fn derive_key(kdf: &KdfParams, pass: &str) -> Result<[u8; 32], AppError> {
 
 // tests moved to bottom to avoid items-after-test-module lint
 
-fn store_fallback(provider: &str, account: &str, secret: &str) -> Result<(), AppError> {
+pub fn store_fallback(provider: &str, account: &str, secret: &str) -> Result<(), AppError> {
     let mut cf = load_or_init_file()?;
     let is_new = cf.entries.is_empty();
     let pass = prompt_passphrase(is_new)?;
@@ -246,7 +249,7 @@ fn store_fallback(provider: &str, account: &str, secret: &str) -> Result<(), App
     save_file(&cf)
 }
 
-fn get_fallback(provider: &str, account: &str) -> Result<String, AppError> {
+pub fn get_fallback(provider: &str, account: &str) -> Result<String, AppError> {
     let cf = load_or_init_file()?;
     let entry_key = format!("{}:{}", provider, account);
     let enc = cf.entries.get(&entry_key).ok_or_else(|| {

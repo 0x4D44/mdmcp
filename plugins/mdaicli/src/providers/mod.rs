@@ -1,7 +1,7 @@
-mod anthropic;
-mod ollama;
-mod openai;
-mod openrouter;
+pub mod anthropic;
+pub mod ollama;
+pub mod openai;
+pub mod openrouter;
 
 use crate::{
     config::Config,

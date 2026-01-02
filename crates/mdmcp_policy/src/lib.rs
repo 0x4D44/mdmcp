@@ -891,4 +891,227 @@ allowed_roots:
             .validate_args(&cmd, &["forbidden".to_string()])
             .is_err());
     }
+
+    #[test]
+    fn test_merge_policies() {
+        let core = Policy {
+            version: 1,
+            network_fs_policy: NetworkFsPolicy::DenyAll,
+            allowed_roots: vec!["/core/root".to_string()],
+            write_rules: vec![WriteRule {
+                path: "/core/write".to_string(),
+                recursive: false,
+                max_file_bytes: 100,
+                create_if_missing: false,
+            }],
+            commands: vec![CommandRule {
+                id: "core-cmd".to_string(),
+                exec: "/bin/core".to_string(),
+                description: Some("core description".to_string()),
+                env_static: HashMap::from([("KEY".to_string(), "CORE".to_string())]),
+                ..CommandRule::default()
+            }],
+            logging: LoggingConfig {
+                level: "info".to_string(),
+                file: None,
+                redact: vec!["password".to_string()],
+            },
+            limits: LimitsConfig {
+                max_read_bytes: 100,
+                max_cmd_concurrency: 1,
+            },
+        };
+
+        let user = Policy {
+            version: 1,
+            network_fs_policy: NetworkFsPolicy::AllowLocalWsl,
+            allowed_roots: vec!["/user/root".to_string(), "/core/root".to_string()],
+            write_rules: vec![WriteRule {
+                path: "/core/write".to_string(), // Overrides core
+                recursive: true,
+                max_file_bytes: 200,
+                create_if_missing: true,
+            }],
+            commands: vec![CommandRule {
+                id: "core-cmd".to_string(), // Overrides core
+                exec: "/bin/user".to_string(),
+                description: None, // Should inherit
+                env_static: HashMap::from([("KEY".to_string(), "USER".to_string())]),
+                ..CommandRule::default()
+            }],
+            logging: LoggingConfig {
+                level: "debug".to_string(),
+                file: Some("/log/file".to_string()),
+                redact: vec!["token".to_string()],
+            },
+            limits: LimitsConfig {
+                max_read_bytes: 200,
+                max_cmd_concurrency: 2,
+            },
+        };
+
+        let merged = merge_policies(core, user);
+
+        assert_eq!(merged.network_fs_policy, NetworkFsPolicy::AllowLocalWsl);
+        assert_eq!(merged.allowed_roots.len(), 2);
+        assert!(merged.allowed_roots.contains(&"/core/root".to_string()));
+        assert!(merged.allowed_roots.contains(&"/user/root".to_string()));
+
+        assert_eq!(merged.write_rules.len(), 1);
+        assert_eq!(merged.write_rules[0].max_file_bytes, 200); // User won
+
+        assert_eq!(merged.commands.len(), 1);
+        let cmd = &merged.commands[0];
+        assert_eq!(cmd.exec, "/bin/user"); // User won
+        assert_eq!(cmd.description, Some("core description".to_string())); // Inherited
+        assert_eq!(cmd.env_static.get("KEY").unwrap(), "USER"); // User won
+
+        assert_eq!(merged.logging.level, "debug");
+        assert_eq!(merged.logging.file, Some("/log/file".to_string()));
+        assert!(merged.logging.redact.contains(&"password".to_string()));
+        assert!(merged.logging.redact.contains(&"token".to_string()));
+
+        assert_eq!(merged.limits.max_read_bytes, 200);
+    }
+
+    #[test]
+    fn test_compile_duplicate_command_id() {
+        // We need a valid executable path for canonicalization to succeed
+        let valid_exec = std::env::current_exe()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        let policy = Policy {
+            version: 1,
+            network_fs_policy: NetworkFsPolicy::DenyAll,
+            allowed_roots: vec![],
+            write_rules: vec![],
+            commands: vec![
+                CommandRule {
+                    id: "cmd1".to_string(),
+                    exec: valid_exec.clone(),
+                    ..CommandRule::default()
+                },
+                CommandRule {
+                    id: "cmd1".to_string(),
+                    exec: valid_exec.clone(),
+                    ..CommandRule::default()
+                },
+            ],
+            logging: LoggingConfig::default(),
+            limits: LimitsConfig::default(),
+        };
+
+        let err = policy.compile().unwrap_err();
+        assert!(matches!(
+            err.downcast_ref::<PolicyError>(),
+            Some(PolicyError::DuplicateCommand(_))
+        ));
+    }
+
+    #[test]
+    fn test_compile_invalid_regex() {
+        let valid_exec = std::env::current_exe()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        let policy = Policy {
+            version: 1,
+            network_fs_policy: NetworkFsPolicy::DenyAll,
+            allowed_roots: vec![],
+            write_rules: vec![],
+            commands: vec![CommandRule {
+                id: "cmd1".to_string(),
+                exec: valid_exec,
+                args: ArgsPolicy {
+                    patterns: vec![ArgPattern {
+                        pattern_type: "regex".to_string(),
+                        value: "(".to_string(), // Invalid regex
+                    }],
+                    ..Default::default()
+                },
+                ..CommandRule::default()
+            }],
+            logging: LoggingConfig::default(),
+            limits: LimitsConfig::default(),
+        };
+
+        let err = policy.compile().unwrap_err();
+        assert!(matches!(
+            err.downcast_ref::<PolicyError>(),
+            Some(PolicyError::InvalidRegex { .. })
+        ));
+    }
+
+    #[test]
+    fn test_compile_platform_filtering() {
+        // This test relies on knowing the current platform.
+        let current_os = if cfg!(target_os = "windows") {
+            "windows"
+        } else if cfg!(target_os = "macos") {
+            "macos"
+        } else {
+            "linux"
+        };
+        let other_os = if current_os == "windows" {
+            "linux"
+        } else {
+            "windows"
+        };
+        let valid_exec = std::env::current_exe()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        let policy = Policy {
+            version: 1,
+            network_fs_policy: NetworkFsPolicy::DenyAll,
+            allowed_roots: vec![],
+            write_rules: vec![],
+            commands: vec![
+                CommandRule {
+                    id: "current_os".to_string(),
+                    exec: valid_exec.clone(),
+                    platform: vec![current_os.to_string()],
+                    ..CommandRule::default()
+                },
+                CommandRule {
+                    id: "other_os".to_string(),
+                    exec: "/bin/other".to_string(), // Path doesn't matter, shouldn't be validated because it's skipped
+                    platform: vec![other_os.to_string()],
+                    ..CommandRule::default()
+                },
+            ],
+            logging: LoggingConfig::default(),
+            limits: LimitsConfig::default(),
+        };
+
+        let compiled = policy.compile().unwrap();
+        assert!(compiled.commands_by_id.contains_key("current_os"));
+        assert!(!compiled.commands_by_id.contains_key("other_os"));
+    }
+
+    impl Default for CommandRule {
+        fn default() -> Self {
+            Self {
+                id: "".to_string(),
+                exec: "".to_string(),
+                description: None,
+                env_static: HashMap::new(),
+                args: ArgsPolicy::default(),
+                cwd_policy: CwdPolicy::default(),
+                env_allowlist: vec![],
+                timeout_ms: default_timeout_ms(),
+                max_output_bytes: default_max_output_bytes(),
+                platform: vec![],
+                allow_any_args: false,
+                help_capture: HelpCaptureConfig::default(),
+            }
+        }
+    }
 }

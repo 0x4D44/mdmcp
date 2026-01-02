@@ -3731,4 +3731,305 @@ mod tests {
         assert_eq!(ctxv["type"].as_str().unwrap(), "file_too_large");
         assert!(ctxv["suggestions"].is_array());
     }
+
+    #[tokio::test]
+    async fn test_initialize_protocol_negotiation() {
+        let server = create_test_server().await;
+        let audit_ctx = AuditContext::new("test".into(), "initialize".into(), "hash".into());
+
+        // Test accepted version
+        let params = serde_json::json!({
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {"name": "test", "version": "1.0"}
+        });
+        let resp = server
+            .handle_initialize(&audit_ctx, RpcId::Number(1), params)
+            .await;
+        assert!(resp.error.is_none());
+        let res: InitializeResult = serde_json::from_value(resp.result.unwrap()).unwrap();
+        assert_eq!(res.protocol_version, "2024-11-05");
+
+        // Test unsupported version
+        let params_bad = serde_json::json!({
+            "protocolVersion": "1999-01-01",
+            "capabilities": {},
+            "clientInfo": {"name": "test", "version": "1.0"}
+        });
+        let resp_bad = server
+            .handle_initialize(&audit_ctx, RpcId::Number(2), params_bad)
+            .await;
+        assert!(resp_bad.error.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_list_directory_success_and_deny() {
+        let server = create_test_server().await;
+        let audit_ctx = AuditContext::new("test".into(), "tools/call".into(), "hash".into());
+        let root0 = { server.policy.read().unwrap().allowed_roots_canonical[0].clone() };
+
+        // Create subdir
+        std::fs::create_dir(root0.join("subdir")).unwrap();
+
+        // Success
+        let resp = server
+            .handle_tools_call(
+                &audit_ctx,
+                RpcId::Number(1),
+                serde_json::json!({
+                    "name": "list_directory",
+                    "arguments": {"path": root0.to_string_lossy()}
+                }),
+            )
+            .await;
+        assert!(resp.error.is_none());
+        let content = resp.result.unwrap()["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(content.contains("subdir"));
+
+        // Deny
+        let resp_deny = server
+            .handle_tools_call(
+                &audit_ctx,
+                RpcId::Number(2),
+                serde_json::json!({
+                    "name": "list_directory",
+                    "arguments": {"path": "/forbidden"}
+                }),
+            )
+            .await;
+        assert!(resp_deny.error.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_stat_path_success_and_deny() {
+        let server = create_test_server().await;
+        let audit_ctx = AuditContext::new("test".into(), "tools/call".into(), "hash".into());
+        let root0 = { server.policy.read().unwrap().allowed_roots_canonical[0].clone() };
+        let file_path = root0.join("stat_me.txt");
+        std::fs::write(&file_path, "content").unwrap();
+
+        // Success
+        let resp = server
+            .handle_tools_call(
+                &audit_ctx,
+                RpcId::Number(1),
+                serde_json::json!({
+                    "name": "stat_path",
+                    "arguments": {"path": file_path.to_string_lossy()}
+                }),
+            )
+            .await;
+        assert!(resp.error.is_none());
+        let content = resp.result.unwrap()["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(content.contains("isFile\":true"));
+        assert!(content.contains("size\":7"));
+
+        // Deny
+        let resp_deny = server
+            .handle_tools_call(
+                &audit_ctx,
+                RpcId::Number(2),
+                serde_json::json!({
+                    "name": "stat_path",
+                    "arguments": {"path": "/forbidden"}
+                }),
+            )
+            .await;
+        assert!(resp_deny.error.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_resources_list_and_read() {
+        let server = create_test_server().await;
+        let audit_ctx = AuditContext::new("test".into(), "resources".into(), "hash".into());
+
+        // List
+        let resp_list = server
+            .handle_resources_list(&audit_ctx, RpcId::Number(1), serde_json::json!({}))
+            .await;
+        assert!(resp_list.error.is_none());
+        let list_res: ResourcesListResult =
+            serde_json::from_value(resp_list.result.unwrap()).unwrap();
+        assert!(list_res
+            .resources
+            .iter()
+            .any(|r| r.uri == "mdmcp://server/capabilities"));
+
+        // Read
+        let resp_read = server
+            .handle_resources_read(
+                &audit_ctx,
+                RpcId::Number(2),
+                serde_json::json!({
+                    "uri": "mdmcp://server/capabilities"
+                }),
+            )
+            .await;
+        assert!(resp_read.error.is_none());
+        let read_res: ResourcesReadResult =
+            serde_json::from_value(resp_read.result.unwrap()).unwrap();
+        match &read_res.contents[0] {
+            ResourceContent::Text { text, .. } => assert!(text.contains("run_command")),
+            _ => panic!("Unexpected content type"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_prompts_list_and_get() {
+        let server = create_test_server().await;
+        let audit_ctx = AuditContext::new("test".into(), "prompts".into(), "hash".into());
+
+        // List
+        let resp_list = server
+            .handle_prompts_list(&audit_ctx, RpcId::Number(1), serde_json::json!({}))
+            .await;
+        assert!(resp_list.error.is_none());
+        let list_res: PromptsListResult =
+            serde_json::from_value(resp_list.result.unwrap()).unwrap();
+        assert!(list_res.prompts.iter().any(|p| p.name == "file_operation"));
+
+        // Get
+        let resp_get = server
+            .handle_prompts_get(
+                &audit_ctx,
+                RpcId::Number(2),
+                serde_json::json!({
+                    "name": "file_operation",
+                    "arguments": {"operation": "read", "path": "test.txt"}
+                }),
+            )
+            .await;
+        assert!(resp_get.error.is_none());
+        let get_res: PromptsGetResult = serde_json::from_value(resp_get.result.unwrap()).unwrap();
+        match &get_res.messages[0].content {
+            PromptContent::Text { text, .. } => {
+                assert!(text.contains("read the file at 'test.txt'"))
+            }
+            _ => panic!("Unexpected content type"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_fs_write_modes() {
+        let server = create_test_server().await;
+        let root0 = { server.policy.read().unwrap().allowed_roots_canonical[0].clone() };
+        let file_path = root0.join("append_me.txt");
+        std::fs::write(&file_path, "start").unwrap();
+        let audit_ctx = AuditContext::new("test".into(), "fs.write".into(), "hash".into());
+
+        // Append
+        let params_append = FsWriteParams {
+            path: file_path.to_string_lossy().to_string(),
+            data: " end".to_string(),
+            encoding: "utf8".to_string(),
+            offset: None,
+            mode: Some("append".to_string()),
+            create: true,
+            atomic: true,
+            overwrite: None,
+        };
+        let resp = server
+            .handle_fs_write(
+                &audit_ctx,
+                RpcId::Number(1),
+                serde_json::to_value(params_append).unwrap(),
+            )
+            .await;
+        assert!(resp.error.is_none());
+        assert_eq!(std::fs::read_to_string(&file_path).unwrap(), "start end");
+
+        // Fail overwrite
+        let params_no_overwrite = FsWriteParams {
+            path: file_path.to_string_lossy().to_string(),
+            data: "overwrite".to_string(),
+            encoding: "utf8".to_string(),
+            offset: None,
+            mode: Some("overwrite".to_string()),
+            create: true,
+            atomic: true,
+            overwrite: Some(false),
+        };
+        let resp_fail = server
+            .handle_fs_write(
+                &audit_ctx,
+                RpcId::Number(2),
+                serde_json::to_value(params_no_overwrite).unwrap(),
+            )
+            .await;
+        assert!(resp_fail.error.is_some()); // Should fail because file exists
+    }
+
+    #[tokio::test]
+    async fn test_get_command_catalog_json() {
+        let server = create_test_server().await;
+        let audit_ctx = AuditContext::new("test".into(), "tools/call".into(), "hash".into());
+        let resp = server
+            .handle_tools_call(
+                &audit_ctx,
+                RpcId::Number(1),
+                serde_json::json!({
+                    "name": "get_command_catalog",
+                    "arguments": {}
+                }),
+            )
+            .await;
+        assert!(resp.error.is_none());
+        let json_str = resp.result.unwrap()["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let catalog: Vec<serde_json::Value> = serde_json::from_str(&json_str).unwrap();
+        assert!(!catalog.is_empty());
+        assert_eq!(catalog[0]["id"], "echo");
+    }
+
+    #[tokio::test]
+    async fn test_cmd_run_failures() {
+        let server = create_test_server().await;
+        let audit_ctx = AuditContext::new("test".into(), "cmd.run".into(), "hash".into());
+
+        // Command not found
+        let params_not_found = CmdRunParams {
+            command_id: "non_existent".to_string(),
+            args: vec![],
+            cwd: None,
+            stdin: String::new(),
+            env: HashMap::new(),
+            timeout_ms: None,
+        };
+        let resp_nf = server
+            .handle_cmd_run(
+                &audit_ctx,
+                RpcId::Number(1),
+                serde_json::to_value(params_not_found).unwrap(),
+            )
+            .await;
+        assert!(resp_nf.error.is_some());
+        assert_eq!(resp_nf.error.unwrap().code, McpErrorCode::PolicyDeny as i32);
+
+        // NOTE: We cannot easily test execution failure (exit code != 0) with just "echo" or "cmd /c echo".
+        // sandbox.rs tests cover execution.
+    }
+
+    #[test]
+    fn test_strip_ansi_fast() {
+        let input = "Hello \x1B[31mWorld\x1B[0m";
+        let cleaned = strip_ansi_fast(input);
+        assert_eq!(cleaned, "Hello World");
+    }
+
+    #[test]
+    fn test_platform_string() {
+        let s = platform_string();
+        assert!(!s.is_empty());
+        if cfg!(windows) {
+            assert_eq!(s, "Windows");
+        }
+    }
 }

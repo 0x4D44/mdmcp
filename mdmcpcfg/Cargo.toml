@@ -29,6 +29,9 @@ mdmcp_policy = { path = "../crates/mdmcp_policy" }
 mdmcp_common = { path = "../crates/mdmcp_common" }
 zip = { version = "0.6", default-features = true }
 
+[dev-dependencies]
+serial_test = "3"
+
 [build-dependencies]
 winres = { version = "0.1", optional = false }
 

@@ -3081,6 +3081,129 @@ mod tests {
         assert!(res.is_err());
         std::env::remove_var("MDMCP_SKIP_SELF_UPDATE");
     }
+
+    #[tokio::test]
+    async fn test_install_info_roundtrip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bin_dir = tmp.path().join("bin");
+        let config_dir = tmp.path().join("config");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        std::fs::create_dir_all(&config_dir).unwrap();
+
+        // Mock binary
+        let binary_path = bin_dir.join(if cfg!(windows) {
+            "mdmcpsrvr.exe"
+        } else {
+            "mdmcpsrvr"
+        });
+        std::fs::write(&binary_path, "fake binary").unwrap();
+
+        let paths = crate::io::Paths {
+            bin_dir,
+            config_dir: config_dir.clone(),
+            policy_file: config_dir.join("policy.yaml"),
+            core_policy_file: config_dir.join("policy.core.yaml"),
+        };
+
+        // Create
+        let info = InstallationInfo::new("1.0.0".to_string(), &paths).unwrap();
+        info.save(&paths).unwrap();
+
+        // Load
+        let loaded = InstallationInfo::load(&paths).unwrap().unwrap();
+        assert_eq!(loaded.version, "1.0.0");
+        assert_eq!(loaded.binary_path, binary_path.to_string_lossy());
+        assert!(!loaded.binary_sha256.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_local_update_logic() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bin_dir = tmp.path().join("bin");
+        let config_dir = tmp.path().join("config");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        std::fs::create_dir_all(&config_dir).unwrap();
+
+        let paths = crate::io::Paths {
+            bin_dir: bin_dir.clone(),
+            config_dir: config_dir.clone(),
+            policy_file: config_dir.join("policy.yaml"),
+            core_policy_file: config_dir.join("policy.core.yaml"),
+        };
+
+        // Mock current binary
+        let dest_binary = paths.server_binary();
+        // Create dummy executable
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut f = std::fs::File::create(&dest_binary).unwrap();
+            f.write_all(b"#!/bin/sh\necho 1.0.0\n").unwrap();
+            let mut p = f.metadata().unwrap().permissions();
+            p.set_mode(0o755);
+            f.set_permissions(p).unwrap();
+        }
+        #[cfg(windows)]
+        {
+            // We can't easily mock an executable that runs on Windows without compiling one.
+            // So we'll skip the execution check in this test or mock the version detection.
+            std::fs::write(&dest_binary, "MZ...").unwrap();
+        }
+
+        // Mock source binary
+        let source_binary = bin_dir.join("new_server");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut f = std::fs::File::create(&source_binary).unwrap();
+            f.write_all(b"#!/bin/sh\necho 2.0.0\n").unwrap();
+            let mut p = f.metadata().unwrap().permissions();
+            p.set_mode(0o755);
+            f.set_permissions(p).unwrap();
+        }
+        #[cfg(windows)]
+        {
+            std::fs::write(&source_binary, "MZ...new").unwrap();
+        }
+
+        // Skip self update
+        std::env::set_var("MDMCP_SKIP_SELF_UPDATE", "1");
+
+        // The update_from_local_binary function actually runs the binary to check version.
+        // On Windows this will fail with our dummy file.
+        // We will just verify that the function exists and compiles, and maybe test failure mode on Windows.
+
+        let res = update_from_local_binary(&paths, &source_binary, true, true, false, None).await;
+
+        #[cfg(unix)]
+        assert!(res.is_ok()); // Should work with shell script stub
+
+        #[cfg(windows)]
+        assert!(res.is_err()); // Will fail to execute dummy exe
+
+        std::env::remove_var("MDMCP_SKIP_SELF_UPDATE");
+    }
+
+    #[test]
+    fn test_checksum_verification() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), b"data").unwrap();
+        let hash = calculate_sha256(tmp.path()).unwrap();
+
+        let ver = BinaryVerification {
+            sha256: hash.clone(),
+            signature: None,
+            signed_by: None,
+        };
+        assert!(verify_binary(tmp.path(), &ver).is_ok());
+
+        let ver_bad = BinaryVerification {
+            sha256: "bad".to_string(),
+            signature: None,
+            signed_by: None,
+        };
+        assert!(verify_binary(tmp.path(), &ver_bad).is_err());
+    }
 }
 /// Verification info for installed binary
 #[cfg(test)]

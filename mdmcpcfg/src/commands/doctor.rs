@@ -401,3 +401,134 @@ async fn test_server_functionality(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::io::ClaudeDesktopConfig;
+    use serial_test::serial;
+    use std::path::PathBuf;
+    use tempfile::tempdir;
+
+    fn setup_test_env(root: &Path) -> (PathBuf, PathBuf) {
+        let bin_dir = root.join("bin");
+        let config_dir = root.join("config");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        std::fs::create_dir_all(&config_dir).unwrap();
+
+        std::env::set_var("MDMCP_TEST_ROOT", root.as_os_str());
+
+        // Mock Claude Config
+        let claude_config_path = root.join("claude_desktop_config.json");
+        std::env::set_var("MDMCP_TEST_CLAUDE_CONFIG", &claude_config_path);
+
+        (bin_dir, config_dir)
+    }
+
+    fn teardown_test_env() {
+        std::env::remove_var("MDMCP_TEST_ROOT");
+        std::env::remove_var("MDMCP_TEST_CLAUDE_CONFIG");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_check_policy_missing() {
+        let tmp = tempdir().unwrap();
+        let (_bin, _cfg) = setup_test_env(tmp.path());
+
+        let mut issues = Vec::new();
+        let mut warnings = Vec::new();
+        check_policy(&mut issues, &mut warnings).await.unwrap();
+
+        teardown_test_env();
+        assert!(issues.iter().any(|i| i.contains("Policy file not found")));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_check_policy_valid() {
+        let tmp = tempdir().unwrap();
+        let (_bin, cfg) = setup_test_env(tmp.path());
+
+        let policy_path = cfg.join("policy.user.yaml");
+        let yaml = r#"
+version: 1
+allowed_roots: ["~"]
+commands: []
+"#;
+        std::fs::write(&policy_path, yaml).unwrap();
+
+        let mut issues = Vec::new();
+        let mut warnings = Vec::new();
+        check_policy(&mut issues, &mut warnings).await.unwrap();
+
+        teardown_test_env();
+        assert!(issues.is_empty());
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_check_installation_missing_binary() {
+        let tmp = tempdir().unwrap();
+        let (_bin, _cfg) = setup_test_env(tmp.path());
+
+        let mut issues = Vec::new();
+        let mut warnings = Vec::new();
+        check_installation(&mut issues, &mut warnings)
+            .await
+            .unwrap();
+
+        teardown_test_env();
+        if !issues.iter().any(|i| i.contains("binary not found")) {
+            println!("Issues found: {:#?}", issues);
+        }
+        assert!(issues.iter().any(|i| i.contains("binary not found")));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_check_claude_desktop_missing() {
+        let tmp = tempdir().unwrap();
+        setup_test_env(tmp.path());
+        // Do not create config file
+
+        let mut issues = Vec::new();
+        let mut warnings = Vec::new();
+        check_claude_desktop(&mut issues, &mut warnings)
+            .await
+            .unwrap();
+
+        teardown_test_env();
+        assert!(warnings.iter().any(|w| w.contains("config file not found")));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_check_claude_desktop_configured() {
+        let tmp = tempdir().unwrap();
+        let (_bin, _cfg) = setup_test_env(tmp.path());
+
+        // Create dummy config
+        let mut cfg = ClaudeDesktopConfig::default();
+        cfg.mcp_servers.insert(
+            "mdmcp".to_string(),
+            serde_json::json!({
+                "command": "fake_path",
+                "args": []
+            }),
+        );
+        cfg.save().unwrap(); // Uses env var override
+
+        let mut issues = Vec::new();
+        let mut warnings = Vec::new();
+        check_claude_desktop(&mut issues, &mut warnings)
+            .await
+            .unwrap();
+
+        teardown_test_env();
+        // Should find config, but binary validation inside check_claude_desktop might fail/warn
+        assert!(issues
+            .iter()
+            .any(|i| i.contains("Configured binary not found")));
+    }
+}

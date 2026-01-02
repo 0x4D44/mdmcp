@@ -635,16 +635,13 @@ mod tests {
     use mdmcp_policy::*;
     use tempfile::{tempdir, NamedTempFile};
 
-    fn create_test_policy() -> CompiledPolicy {
-        let temp_dir = tempdir().unwrap();
-        let test_root = temp_dir.path().to_path_buf();
-
+    fn create_test_policy(root: &Path) -> CompiledPolicy {
         let policy = Policy {
             version: 1,
             network_fs_policy: NetworkFsPolicy::DenyAll,
-            allowed_roots: vec![test_root.to_string_lossy().to_string()],
+            allowed_roots: vec![root.to_string_lossy().to_string()],
             write_rules: vec![WriteRule {
-                path: test_root.to_string_lossy().to_string(),
+                path: root.to_string_lossy().to_string(),
                 recursive: true,
                 max_file_bytes: 1000,
                 create_if_missing: true,
@@ -682,9 +679,9 @@ mod tests {
 
     #[test]
     fn test_guarded_file_writer() {
-        let policy = create_test_policy();
-        let temp_dir = PathBuf::from(&policy.allowed_roots_canonical[0]);
-        let test_file = temp_dir.join("test_write.txt");
+        let temp_dir = tempdir().unwrap();
+        let policy = create_test_policy(temp_dir.path());
+        let test_file = temp_dir.path().join("test_write.txt");
 
         let writer = GuardedFileWriter::create(&test_file, &policy, true, true).unwrap();
         let (bytes_written, _hash) = writer.write_atomic(b"test data").unwrap();
@@ -695,7 +692,8 @@ mod tests {
 
     #[test]
     fn test_path_not_allowed() {
-        let policy = create_test_policy();
+        let temp_dir = tempdir().unwrap();
+        let policy = create_test_policy(temp_dir.path());
         let forbidden_path = PathBuf::from("/tmp/forbidden.txt");
 
         let result = GuardedFileReader::open(&forbidden_path, &policy);
@@ -704,9 +702,9 @@ mod tests {
 
     #[test]
     fn test_file_size_limit() {
-        let policy = create_test_policy();
-        let temp_dir = PathBuf::from(&policy.allowed_roots_canonical[0]);
-        let test_file = temp_dir.join("large_file.txt");
+        let temp_dir = tempdir().unwrap();
+        let policy = create_test_policy(temp_dir.path());
+        let test_file = temp_dir.path().join("large_file.txt");
 
         let writer = GuardedFileWriter::create(&test_file, &policy, true, true).unwrap();
         let large_data = vec![b'x'; 2000]; // Exceeds 1000 byte limit
@@ -791,5 +789,51 @@ mod tests {
             assert!(check_network_fs_access(&wsl_path, NetworkFsPolicy::AllowAll).is_ok());
             assert!(check_network_fs_access(&remote_path, NetworkFsPolicy::AllowAll).is_ok());
         }
+    }
+
+    #[test]
+    fn test_open_directory_as_file_fails() {
+        let temp_dir = tempdir().unwrap();
+        let policy = create_test_policy(temp_dir.path());
+        let sub_dir = temp_dir.path().join("subdir");
+        std::fs::create_dir(&sub_dir).unwrap();
+
+        let result = GuardedFileReader::open(&sub_dir, &policy);
+        assert!(matches!(result, Err(FsError::SpecialFile { .. })));
+    }
+
+    #[test]
+    fn test_writer_create_false_fails_if_missing() {
+        let temp_dir = tempdir().unwrap();
+        let policy = create_test_policy(temp_dir.path());
+        let test_file = temp_dir.path().join("missing.txt");
+
+        // create=false should fail
+        let result = GuardedFileWriter::create(&test_file, &policy, false, true);
+        assert!(matches!(result, Err(FsError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound));
+    }
+
+    #[test]
+    fn test_writer_overwrite_false_fails_if_exists() {
+        let temp_dir = tempdir().unwrap();
+        let policy = create_test_policy(temp_dir.path());
+        let test_file = temp_dir.path().join("exists.txt");
+        std::fs::write(&test_file, "content").unwrap();
+
+        // overwrite=false should fail
+        let result = GuardedFileWriter::create(&test_file, &policy, true, false);
+        assert!(
+            matches!(result, Err(FsError::Io(e)) if e.kind() == std::io::ErrorKind::AlreadyExists)
+        );
+    }
+
+    #[test]
+    fn test_canonicalize_path_parent_missing() {
+        let temp_dir = tempdir().unwrap();
+        let missing_parent = temp_dir.path().join("missing_dir").join("file.txt");
+
+        // This should fail because the parent "missing_dir" does not exist
+        let result = canonicalize_path(&missing_parent);
+        assert!(result.is_err());
     }
 }

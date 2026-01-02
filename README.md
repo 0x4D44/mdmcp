@@ -1,323 +1,120 @@
 # mdmcp — Minimal, Policy‑Driven MCP Server
 
-mdmcp is a small, security‑focused [Model Context Protocol (MCP)] server with a
-clear goal: enable powerful local tooling while keeping your machine safe.
-It gates every filesystem and process action behind an explicit policy, and runs
-approved commands in a sandbox with resource limits.
+[![CI](https://github.com/0x4D44/mdmcp/actions/workflows/ci.yml/badge.svg)](https://github.com/0x4D44/mdmcp/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-The companion CLI, `mdmcpcfg`, installs and updates the server, manages
-policies, and (optionally) wires the server into Claude Desktop.
+**mdmcp** is a security‑focused, policy‑driven [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server built in Rust. It empowers LLMs with local tooling while maintaining strict control over filesystem access and command execution.
 
+## 🚀 Key Features
 
-## Why mdmcp?
-- Security first: All file access and command execution is policy‑gated.
-- Sandboxed execution: Commands run with time, output, and environment
-  restrictions; working directories are validated and path arguments are kept
-  within allowed roots.
-- Simple policy: A single `policy.yaml` defines allowed read/write paths and a
-  catalog of commands with arguments you trust.
-- Friendly tooling: `mdmcpcfg` helps install/update, edit policies, and
-  integrate with Claude Desktop.
+*   **🛡️ Security First:** Every file operation and command execution is gated by an explicit `policy.yaml`. No access is granted by default.
+*   **📦 Sandboxed Execution:** Commands run with strict resource limits (time, output size) and environment variable filtering.
+*   **🔌 Plugin Ecosystem:** Extensible architecture with a suite of CLI plugins for AI (`mdaicli`), Jira, Slack, Mail, and Confluence.
+*   **🛠️ Robust Tooling:** Includes `mdmcpcfg`, a powerful CLI for installation, updates, policy management, and diagnostics.
+*   **💻 Cross-Platform:** Native support for Windows, macOS, and Linux (including WSL integration).
 
+## 📦 Components
 
-## Quick Start
+The repository is organized as a Cargo workspace with the following core members:
 
-- Build the workspace:
+| Component | Description |
+| :--- | :--- |
+| **`mdmcpsrvr`** | The core MCP server binary. Implements the MCP protocol over stdio and enforces security policies. |
+| **`mdmcpcfg`** | Configuration CLI. Handles installation, updates, Claude Desktop integration, and policy editing. |
+| **`plugins/`** | A collection of specialized CLI tools that extend the server's capabilities (see [Plugins](#-plugins)). |
 
-```
-cargo build --workspace
-```
+## 🛠️ Installation
 
-- Install the server (select GitHub or Local if both are available):
+### Quick Start
 
-```
-cargo run -p mdmcpcfg -- install
-```
+1.  **Build the workspace:**
+    ```bash
+    cargo build --workspace --release
+    ```
 
-- Run the MCP server over stdio (for testing):
+2.  **Install the server and configure Claude Desktop:**
+    ```bash
+    cargo run -p mdmcpcfg -- install
+    ```
+    This command will:
+    *   Install the `mdmcpsrvr` binary.
+    *   Create a default secure policy.
+    *   Automatically configure Claude Desktop to use the server.
 
-```
+3.  **Restart Claude Desktop** to load the new configuration.
+
+### Manual Setup
+
+If you prefer manual configuration, you can run the server directly:
+
+```bash
 cargo run -p mdmcpsrvr -- --config path/to/policy.yaml --stdio
 ```
 
-- Show CLI help:
+## ⚙️ Configuration (Policy)
 
-```
-cargo run -p mdmcpcfg -- --help
-```
+The heart of `mdmcp` is the `policy.yaml` file. It defines exactly what the LLM is allowed to do.
 
-
-## The `mdmcpcfg` CLI
-
-`mdmcpcfg` manages the server binary and your policy:
-
-- `install` — Download/install the server and (optionally) configure Claude Desktop.
-  - Detects available sources and prompts: `[G]itHub / [L]ocal / [N]one`.
-- `update` — Update the server to the latest release (or from a local binary).
-  - Also prompts for the source as above.
-- `policy` — Manage policy files:
-  - `show` — Print the current policy.
-  - `edit` — Open the policy in your default editor.
-  - `validate --file <path>` — Validate a policy file against the schema.
-  - `add-root <path> [--write]` — Add an allowed root; optionally allow writing.
-  - `remove-root <path> [-w]` — Remove an allowed root; `-w` also removes the write rule.
-  - `add-command <id> --exec <path> [--allow <arg>] [--pattern <regex>]` — Add a command.
-  - `set-network-fs <mode>` — Set network filesystem policy (`deny-all`, `allow-local-wsl`, `allow-all`).
-- `doctor` — Run diagnostics.
-- `uninstall [--remove-policy] [--remove-claude-config]` — Remove the server and config.
-
-Common examples:
-
-```
-# Install and configure Claude Desktop
-mdmcpcfg install
-
-# Show current policy
-mdmcpcfg policy show
-
-# Add an allowed root (read‑only)
-mdmcpcfg policy add-root "C:/Users/you/projects"
-
-# Add an allowed root with write permission
-mdmcpcfg policy add-root "C:/Users/you/mdmcp-workspace" --write
-
-# Add a command with fixed exec and basic allow list
-mdmcpcfg policy add-command echo --exec "/bin/echo" --allow hello --allow world
-
-# Remove an allowed root (and its write rule with -w)
-mdmcpcfg policy remove-root "C:/Users/you/old-project" -w
-
-# Allow WSL paths on Windows (for accessing \\wsl$\... or \\wsl.localhost\...)
-mdmcpcfg policy set-network-fs allow-local-wsl
-```
-
-
-## Security Model (At a Glance)
-
-- Allowed roots: All file operations are constrained to paths under
-  `allowed_roots`. Any read/write outside is denied.
-- Write rules: Writes are permitted only where a `write_rules` entry exists
-  (path, recursive, max file size, and optional auto‑create directories).
-- Network filesystems: `network_fs_policy` controls access to network mounts:
-  - `deny_all` (default): Block all network filesystems (NFS/SMB/UNC)
-  - `allow_local_wsl`: Allow local WSL paths (`\\wsl$\...`, `\\wsl.localhost\...`) but block remote shares
-  - `allow_all`: Allow all network filesystems (use with caution)
-- Command sandbox:
-  - Working directory validation: `cwd_policy` controls where a command may run
-    (e.g., within an allowed root or fixed to the exec directory).
-  - Path‑argument scoping: Path‑like arguments (absolute or relative) are
-    validated to remain within allowed roots, even if a command opts into
-    `allow_any_args`.
-  - Environment filtering: Only a safe baseline plus `env_allowlist` variables
-    are passed to processes.
-  - Resource limits: Enforced per command for time and output size; Unix builds
-    apply additional rlimits.
-- Auditing: The server logs decisions and outcomes to stderr; avoid logging secrets.
-
-
-## Policy File: `policy.yaml`
-
-The server loads a single YAML policy file defining allowed roots, write rules,
-limits, and a command catalog. A minimal example:
+**Example `policy.yaml`:**
 
 ```yaml
 version: 1
-network_fs_policy: deny_all  # deny_all | allow_local_wsl | allow_all
+network_fs_policy: deny_all  # Block network shares (NFS/SMB) for safety
 allowed_roots:
-  - "~/"            # Home directory
-  - "C:/Users"      # Example on Windows
+  - "C:/Users/alice/projects" # Only allow reading from this directory
 write_rules:
-  - path: "~/mdmcp-workspace"
+  - path: "C:/Users/alice/projects/logs" # Only allow writing to this subdirectory
     recursive: true
-    max_file_bytes: 10000000
-    create_if_missing: true
+    max_file_bytes: 1048576 # 1MB limit
 commands:
   - id: "echo"
     exec: "/bin/echo"
     args:
-      allow: ["hello", "world"]
-      fixed: []
-      patterns: []         # optional regexes
-    cwd_policy: within_root  # within_root | fixed | none
-    env_allowlist: ["TEST_VAR"]
+      allow: ["hello", "world"] # Whitelist specific arguments
     timeout_ms: 5000
-    max_output_bytes: 1000000
-    platform: ["linux", "macos"]
-    allow_any_args: false   # true to skip arg allow/pattern checks
 ```
 
-Key sections
+### Managing Policy via CLI
 
-- `version`: Policy schema version.
-- `network_fs_policy`: Controls network filesystem access:
-  - `deny_all`: Block all network filesystems (default, most secure)
-  - `allow_local_wsl`: Allow WSL paths on Windows but block remote network shares
-  - `allow_all`: Allow all network filesystems (least secure)
-  - Note: The legacy `deny_network_fs` boolean is still supported for backward compatibility.
-- `allowed_roots`: Canonicalized roots that define where reads are allowed.
-- `write_rules`: Paths where writes are allowed, with limits.
-- `commands` (catalog):
-  - `id`: Command identifier exposed via the MCP server.
-  - `exec`: Absolute path to the executable.
-  - `args`: Three independent controls:
-    - `allow`: exact argument strings permitted
-    - `fixed`: arguments always prepended (not user‑supplied)
-    - `patterns`: regexes for flexible argument validation
-  - `cwd_policy`:
-    - `within_root`: CWD must be inside an allowed root (recommended default)
-    - `fixed`: CWD is set to the exec directory
-    - `none`: do not set or validate CWD
-  - `env_allowlist`: Env vars that may pass through to the process.
-  - `timeout_ms` / `max_output_bytes`: Per‑command resource limits.
-  - `platform`: Optional list to restrict a command to specific OSes.
-  - `allow_any_args`: If true, skip allow/pattern checks (path scoping still applies).
+Use `mdmcpcfg` to safely modify your policy:
 
-See `examples/policy.example.yaml` for a more complete template generated by the
-CLI. The CLI’s `policy validate` command checks structure and common pitfalls.
+*   **View Policy:** `mdmcpcfg policy show`
+*   **Add Allowed Root:** `mdmcpcfg policy add-root "/path/to/project"`
+*   **Add Write Permission:** `mdmcpcfg policy add-root "/path/to/scratch" --write`
+*   **Add Command:** `mdmcpcfg policy add-command git --exec "/usr/bin/git"`
+*   **Validate Policy:** `mdmcpcfg policy validate`
 
+## 🔌 Plugins
 
-## Claude Desktop Integration
+`mdmcp` includes several plugins located in the `plugins/` directory. These are standalone CLIs that can be added to your policy to provide specialized capabilities to the LLM.
 
-`mdmcpcfg install` can add a `mdmcp` entry to Claude Desktop's configuration
-so Claude can launch the server over stdio. Configuration locations are handled
-per‑platform by the CLI; a successful run prints the updated config path.
-Restart Claude Desktop after installation.
+*   **`mdaicli`**: Unified CLI for accessing AI providers (OpenAI, Anthropic, Ollama, OpenRouter).
+*   **`mdconfcli`**: Interface with Confluence.
+*   **`mdjiracli`**: Interact with Jira issues.
+*   **`mdmailcli`**: Send and read emails.
+*   **`mdslackcli`**: Send messages and read Slack channels.
 
+To use a plugin, build it and add it to your policy using `mdmcpcfg policy add-command`.
 
-## MCP Tools Exposed
+## 🛡️ Security Model
 
-The server exposes these tools to MCP clients:
+1.  **Path Confinement:** File operations (`fs.read`, `fs.write`, `list_directory`) are strictly confined to `allowed_roots`. Path traversal attacks are blocked.
+2.  **Network Isolation:** By default, network filesystems (UNC paths, mapped drives) are blocked to prevent data exfiltration or access to shared resources.
+3.  **Command Whitelisting:** Only commands explicitly defined in the `commands` catalog can be executed.
+4.  **Argument Validation:** Command arguments are validated against allowlists or regex patterns to prevent injection attacks.
+5.  **Environment Filtering:** Child processes run with a sanitized environment. Only whitelisted variables are passed through.
 
-| Tool | Description |
-|------|-------------|
-| `read_lines` / `read_bytes` | Read files within allowed roots |
-| `write_file` | Write files within allowed roots (requires write rule) |
-| `run_command` | Execute commands from the policy catalog |
-| `list_directory` / `stat_path` | Directory listing and file info |
-| `list_accessible_directories` | Show allowed roots and write paths |
-| `get_command_catalog` | Get full command catalog as JSON (useful when `resources/read` unavailable) |
-| `server_info` | Version, policy summary, and policy format reference |
-| `reload_policy` | Reload policy without restarting |
-| `get_datetime` / `get_working_directory` / `set_working_directory` | Utility tools |
+## 🤝 Contributing
 
-The server also exposes MCP resources (`mdmcp://commands/catalog`, `mdmcp://doc/tools`,
-`mdmcp://server/capabilities`) via `resources/read`, but some clients (e.g., Claude Desktop)
-don't yet support this—use `get_command_catalog` as a workaround.
+We welcome contributions!
 
+1.  **Clone the repo:** `git clone https://github.com/0x4D44/mdmcp.git`
+2.  **Run tests:** `cargo test --workspace --all-features`
+3.  **Format code:** `cargo fmt --all`
+4.  **Lint:** `cargo clippy --workspace --all-targets --all-features`
 
-## Development
+See [CLAUDE.md](CLAUDE.md) for detailed development guidelines.
 
-- Build: `cargo build --workspace`
-- Run server (stdio):
-  `cargo run -p mdmcpsrvr -- --config tests/test_policy.yaml --stdio`
-- Run CLIs:
-  - `cargo run -p mdmcpcfg -- --help`
-  - `cargo run -p mdaicli -- --help` (single-page full help)
-  - See `plugins/mdaicli/docs/HELP.md` for the same help page in docs form
-- Tests: `cargo test --workspace --all-features`
-- Lint/format: `cargo fmt --all` and
-  `cargo clippy --all-targets --all-features -D warnings`
+## 📄 License
 
-
-## Troubleshooting
-
-- Logs are written to stderr; adjust verbosity with `--log-level` when supported.
-- If install/update can’t reach GitHub, place a local `mdmcpsrvr` binary next to
-  `mdmcpcfg` and choose `[L]ocal` when prompted.
-- Ensure your `policy.yaml` declares a writable workspace if tools need to
-  create or modify files.
-
-
-## Security Tips
-
-- Keep `network_fs_policy: deny_all` unless you have a specific need (use `allow_local_wsl` for WSL access on Windows).
-- Minimize `allowed_roots` and avoid broad patterns.
-- Prefer `allow_any_args: false` for commands like `del`, `rmdir`, `copy`, etc.
-- Review and prune `env_allowlist` to the minimum required.
-- Do not log secrets in arguments or environment variables.
-
----
-
-For a deeper dive, see:
-- `examples/policy.example.yaml` — starter policy template
-- `docs/INSTALLATION_AND_USAGE.md` — additional platform notes
-- `docs/mcp-server-development-guide.md` — MCP implementation details
-
-
-## Structured Error Responses
-
-The server now attaches structured `error.data` to all JSON‑RPC error responses. These fields make failures easier to diagnose programmatically and in logs.
-
-- Common fields (always present on errors):
-  - `method`: The MCP method that failed (or `"unknown"` for parse errors).
-  - `reason`: Short, machine‑friendly reason code (e.g., `invalidParameters`, `policyDenied`, `ioError`).
-  - `requestId`: The JSON‑RPC id echoed back as a string/number/`null`.
-  - `serverVersion`: mdmcpsrvr version string.
-  - `policyHash`: Current active policy hash.
-
-- File system errors (`fs.read`, `fs.write`):
-  - `path`: The file path involved (when applicable).
-  - `rule`: The policy rule name on denials (e.g., `pathNotAllowed`, `writeNotPermitted`, `networkFsDenied`, `fileTooLarge`).
-  - `detail`: Short human‑readable hint.
-
-- Command errors (`cmd.run`):
-  - `commandId`: The command id from the catalog.
-  - `timedOut`, `truncated`: Booleans set for timeout/output‑limit related cases (also `false` in validation/denial paths for clarity).
-  - `exitCode`, `stderrSnippet` (<= 200 chars): Included when available for execution‑related failures. Note: non‑zero exit codes currently return success with result; these fields may be absent in error paths that occur before process completion (e.g., validation/denial/timeout).
-
-Examples
-
-```jsonc
-// fs.read with invalid encoding
-{
-  "code": -32602,
-  "message": "Invalid method parameter(s)",
-  "data": {
-    "method": "fs.read",
-    "reason": "invalidEncoding",
-    "requestId": "42",
-    "serverVersion": "x.y.z",
-    "policyHash": "<hash>",
-    "encoding": "utf16",
-    "detail": "Unsupported encoding"
-  }
-}
-```
-
-```jsonc
-// cmd.run denied by policy (unknown command)
-{
-  "code": -32001,
-  "message": "Policy denied: commandNotFound",
-  "data": {
-    "method": "cmd.run",
-    "reason": "policyDenied",
-    "requestId": "abc-123",
-    "serverVersion": "x.y.z",
-    "policyHash": "<hash>",
-    "rule": "commandNotFound",
-    "commandId": "not-a-command",
-    "timedOut": false,
-    "truncated": false
-  }
-}
-```
-
-```jsonc
-// cmd.run timeout
-{
-  "code": -32002,
-  "message": "Command timed out after 5000ms",
-  "data": {
-    "method": "cmd.run",
-    "reason": "timeout",
-    "requestId": 7,
-    "serverVersion": "x.y.z",
-    "policyHash": "<hash>",
-    "commandId": "long_running",
-    "timeoutMs": 5000,
-    "timedOut": true,
-    "truncated": false
-  }
-}
-```
+This project is licensed under the Apache 2.0 License - see the [LICENSE](LICENSE) file for details.
